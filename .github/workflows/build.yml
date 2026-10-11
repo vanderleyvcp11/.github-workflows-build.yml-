@@ -1,0 +1,1144 @@
+name: Build ATLAS APK
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Instalar Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Instalar Gradle 8.5
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.5'
+
+      - name: Aceitar licencas do Android SDK
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1 || true
+
+      - name: Gerar projeto completo
+        run: |
+          mkdir -p app/src/main/java/com/atlas/assistant
+          mkdir -p app/src/main/res/values
+          mkdir -p app/src/main/res/drawable
+          mkdir -p app/src/main/res/mipmap-anydpi-v26
+
+          # ================= settings.gradle.kts =================
+          cat > settings.gradle.kts << 'FIM_SETTINGS'
+          pluginManagement {
+              repositories { google(); mavenCentral(); gradlePluginPortal() }
+          }
+          dependencyResolutionManagement {
+              repositories { google(); mavenCentral() }
+          }
+          rootProject.name = "ATLAS"
+          include(":app")
+          FIM_SETTINGS
+
+          # ================= build.gradle.kts =================
+          cat > build.gradle.kts << 'FIM_ROOT'
+          plugins {
+              id("com.android.application") version "8.2.2" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.22" apply false
+          }
+          FIM_ROOT
+
+          # ================= gradle.properties =================
+          cat > gradle.properties << 'FIM_PROPS'
+          org.gradle.jvmargs=-Xmx2048m
+          android.useAndroidX=true
+          kotlin.code.style=official
+          android.nonTransitiveRClass=true
+          FIM_PROPS
+
+          # ================= app/build.gradle.kts =================
+          cat > app/build.gradle.kts << 'FIM_APP'
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+          android {
+              namespace = "com.atlas.assistant"
+              compileSdk = 34
+              defaultConfig {
+                  applicationId = "com.atlas.assistant"
+                  minSdk = 26
+                  targetSdk = 34
+                  versionCode = 1
+                  versionName = "1.0"
+              }
+              buildFeatures { compose = true }
+              composeOptions { kotlinCompilerExtensionVersion = "1.5.8" }
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions { jvmTarget = "17" }
+          }
+          dependencies {
+              implementation(platform("androidx.compose:compose-bom:2024.02.01"))
+              implementation("androidx.compose.ui:ui")
+              implementation("androidx.compose.foundation:foundation")
+              implementation("androidx.compose.material3:material3")
+              implementation("androidx.activity:activity-compose:1.8.2")
+              implementation("androidx.core:core-ktx:1.12.0")
+              implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
+              implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
+          }
+          FIM_APP
+
+          # ================= AndroidManifest.xml =================
+          cat > app/src/main/AndroidManifest.xml << 'FIM_MANIFEST'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+              <uses-permission android:name="android.permission.INTERNET"/>
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE"/>
+              <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+              <uses-permission android:name="android.permission.CALL_PHONE"/>
+              <uses-permission android:name="android.permission.READ_CONTACTS"/>
+              <uses-permission android:name="android.permission.READ_MEDIA_AUDIO"/>
+              <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32"/>
+              <uses-permission android:name="com.android.alarm.permission.SET_ALARM"/>
+              <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
+              <application
+                  android:label="@string/app_name"
+                  android:icon="@mipmap/ic_launcher"
+                  android:theme="@style/Theme.ATLAS"
+                  android:allowBackup="false">
+                  <activity android:name=".MainActivity" android:exported="true" android:launchMode="singleTask">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN"/>
+                          <category android:name="android.intent.category.LAUNCHER"/>
+                      </intent-filter>
+                  </activity>
+                  <service android:name=".AtlasService" android:exported="false" android:foregroundServiceType="microphone"/>
+                  <receiver android:name=".BootReceiver" android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.BOOT_COMPLETED"/>
+                      </intent-filter>
+                  </receiver>
+              </application>
+          </manifest>
+          FIM_MANIFEST
+
+          # ================= strings =================
+          cat > app/src/main/res/values/strings.xml << 'FIM_STRINGS'
+          <resources>
+              <string name="app_name">ATLAS</string>
+          </resources>
+          FIM_STRINGS
+
+          # ================= colors =================
+          cat > app/src/main/res/values/colors.xml << 'FIM_COLORS'
+          <resources>
+              <color name="black">#000000</color>
+              <color name="ic_bg">#050A12</color>
+          </resources>
+          FIM_COLORS
+
+          # ================= themes =================
+          cat > app/src/main/res/values/themes.xml << 'FIM_THEMES'
+          <resources>
+              <style name="Theme.ATLAS" parent="android:Theme.Material.NoActionBar">
+                  <item name="android:windowBackground">@color/black</item>
+                  <item name="android:statusBarColor">@color/black</item>
+                  <item name="android:navigationBarColor">@color/black</item>
+              </style>
+          </resources>
+          FIM_THEMES
+
+          # ================= icone reator =================
+          cat > app/src/main/res/drawable/ic_reactor.xml << 'FIM_ICON'
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="108dp" android:height="108dp"
+              android:viewportWidth="108" android:viewportHeight="108">
+              <path android:pathData="M54,54 m-32,0 a32,32 0 1,1 64,0 a32,32 0 1,1 -64,0"
+                  android:strokeColor="#00E5FF" android:strokeWidth="4" android:fillColor="#00000000"/>
+              <path android:pathData="M54,54 m-18,0 a18,18 0 1,1 36,0 a18,18 0 1,1 -36,0"
+                  android:strokeColor="#00E5FF" android:strokeWidth="3" android:fillColor="#00000000"/>
+              <path android:pathData="M54,42 L66,64 L42,64 Z" android:fillColor="#B2FFFF"/>
+          </vector>
+          FIM_ICON
+
+          # ================= launcher adaptativo =================
+          cat > app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml << 'FIM_LAUNCHER'
+          <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+              <background android:drawable="@color/ic_bg"/>
+              <foreground android:drawable="@drawable/ic_reactor"/>
+          </adaptive-icon>
+          FIM_LAUNCHER
+
+          # ================= VoiceOutput.kt =================
+          cat > app/src/main/java/com/atlas/assistant/VoiceOutput.kt << 'FIM_VOICE'
+          package com.atlas.assistant
+
+          import android.content.Context
+          import android.os.Bundle
+          import android.os.Handler
+          import android.os.Looper
+          import android.speech.tts.TextToSpeech
+          import android.speech.tts.UtteranceProgressListener
+          import java.util.Locale
+
+          object VoiceOutput {
+              private var tts: TextToSpeech? = null
+              private var ready = false
+              private val main = Handler(Looper.getMainLooper())
+
+              fun init(context: Context) {
+                  if (tts != null) return
+                  tts = TextToSpeech(context.applicationContext) { status ->
+                      ready = status == TextToSpeech.SUCCESS
+                      if (ready) pickVoice()
+                  }
+              }
+
+              private fun pickVoice() {
+                  val t = tts ?: return
+                  val voices = t.voices ?: run { t.language = Locale.UK; return }
+                  val gb = voices.filter {
+                      it.locale.language == "en" &&
+                      (it.locale.country == "GB" || it.name.contains("UK", true) || it.name.contains("United Kingdom", true))
+                  }
+                  val male = gb.firstOrNull {
+                      Regex("ryan|daniel|arthur|george|male", RegexOption.IGNORE_CASE).containsMatchIn(it.name)
+                  }
+                  (male ?: gb.firstOrNull())?.let { t.voice = it; t.language = it.locale } ?: run { t.language = Locale.UK }
+                  t.setPitch(0.92f)
+                  t.setSpeechRate(1.02f)
+              }
+
+              fun speak(text: String, onDone: () -> Unit) {
+                  val t = tts
+                  if (t == null || !ready) { main.post(onDone); return }
+                  Bus.state.value = Bus.State.SPEAKING
+                  t.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                      override fun onStart(utteranceId: String?) {}
+                      override fun onDone(utteranceId: String?) {
+                          main.post { Bus.state.value = Bus.State.IDLE; onDone() }
+                      }
+                      @Deprecated("Deprecated in Java")
+                      override fun onError(utteranceId: String?) {
+                          main.post { Bus.state.value = Bus.State.IDLE; onDone() }
+                      }
+                  })
+                  t.speak(text, TextToSpeech.QUEUE_FLUSH, Bundle(), "atlas_${System.nanoTime()}")
+              }
+          }
+          FIM_VOICE
+
+          # ================= WeatherTool.kt =================
+          cat > app/src/main/java/com/atlas/assistant/WeatherTool.kt << 'FIM_WEATHER'
+          package com.atlas.assistant
+
+          import android.content.Context
+          import kotlinx.coroutines.Dispatchers
+          import kotlinx.coroutines.withContext
+          import org.json.JSONObject
+          import java.net.URL
+          import java.net.URLEncoder
+
+          object WeatherTool {
+              suspend fun fetch(ctx: Context, q: String): String = withContext(Dispatchers.IO) {
+                  val city = Regex("clima (?:em|de|do) ([a-z\\-\\s]+)").find(q)?.groupValues?.get(1)?.trim()
+                      ?: Regex("tempo (?:em|de) ([a-z\\-\\s]+)").find(q)?.groupValues?.get(1)?.trim()
+                  val prefs = ctx.getSharedPreferences("atlas", Context.MODE_PRIVATE)
+                  val name = (city?.trimEnd('?', '.', '!')) ?: prefs.getString("city", "São Paulo")!!
+                  if (city != null) prefs.edit().putString("city", name).apply()
+
+                  val geo = json("https://geocoding-api.open-meteo.com/v1/search" +
+                          "?name=${URLEncoder.encode(name, "UTF-8")}&count=1&language=pt")
+                  val g = geo.optJSONArray("results")?.optJSONObject(0)
+                      ?: return@withContext "Não encontrei a cidade \"$name\", senhor."
+                  val lat = g.getDouble("latitude"); val lon = g.getDouble("longitude")
+                  val resolved = g.optString("name", name)
+
+                  val w = json("https://api.open-meteo.com/v1/forecast" +
+                          "?latitude=$lat&longitude=$lon&current_weather=true")
+                  val cw = w.getJSONObject("current_weather")
+                  val temp = cw.getDouble("temperature")
+                  val wind = cw.getDouble("windspeed")
+                  "Em $resolved: ${describe(cw.getInt("weathercode"))}, " +
+                          "$temp graus, vento de ${wind.toInt()} quilômetros por hora, senhor."
+              }
+
+              private fun json(url: String): JSONObject =
+                  JSONObject(URL(url).openStream().bufferedReader().use { it.readText() })
+
+              private fun describe(c: Int) = when (c) {
+                  0 -> "céu limpo"
+                  in 1..2 -> "predominantemente limpo"
+                  3 -> "nublado"
+                  in 45..48 -> "nevoeiro"
+                  in 51..57 -> "garoa"
+                  in 61..67 -> "chuva"
+                  in 71..77 -> "neve"
+                  in 80..82 -> "pancadas de chuva"
+                  in 85..86 -> "pancadas de neve"
+                  in 95..99 -> "trovoada"
+                  else -> "céu instável"
+              }
+          }
+          FIM_WEATHER
+
+          # ================= AtlasBrain.kt =================
+          cat > app/src/main/java/com/atlas/assistant/AtlasBrain.kt << 'FIM_BRAIN'
+          package com.atlas.assistant
+
+          import android.app.ActivityManager
+          import android.content.Context
+          import android.content.Intent
+          import android.hardware.camera2.CameraCharacteristics
+          import android.hardware.camera2.CameraManager
+          import android.media.AudioAttributes
+          import android.media.AudioManager
+          import android.media.MediaPlayer
+          import android.net.Uri
+          import android.os.BatteryManager
+          import android.os.Build
+          import android.os.ContentUris
+          import android.provider.AlarmClock
+          import android.provider.ContactsContract
+          import android.provider.MediaStore
+          import android.provider.Settings
+          import androidx.core.content.ContextCompat
+          import kotlinx.coroutines.CoroutineScope
+          import kotlinx.coroutines.Dispatchers
+          import kotlinx.coroutines.delay
+          import kotlinx.coroutines.launch
+          import java.text.Normalizer
+          import java.text.SimpleDateFormat
+          import java.util.Date
+          import java.util.Locale
+
+          object AtlasBrain {
+              private var player: MediaPlayer? = null
+              private var torchOn = false
+
+              suspend fun handle(ctx: Context, raw: String): String =
+                  try { route(ctx, raw, normalize(raw)) }
+                  catch (e: Exception) { "Encontrei uma falha ao executar: ${e.message}, senhor." }
+
+              private fun normalize(s: String) =
+                  Normalizer.normalize(s.lowercase(Locale.ROOT), Normalizer.Form.NFD)
+                      .replace(Regex("\\p{M}+"), "").trim()
+
+              private suspend fun route(ctx: Context, raw: String, q: String): String = when {
+                  q == "oi" || q == "ola" || "bom dia" in q || "boa tarde" in q || "boa noite" in q
+                          || "hello" in q -> listOf(
+                      "Às suas ordens, senhor.",
+                      "Olá. Todos os sistemas à sua disposição.",
+                      "Pois não, senhor?"
+                  ).random()
+
+                  "lanterna" in q || "luz" in q || "torch" in q || "flashlight" in q -> flashlight(ctx, q)
+                  "protocolo casa de festas" in q || "party mode" in q -> partyMode(ctx)
+                  "bateria" in q || "battery" in q -> battery(ctx)
+                  "hora" in q && ("que" in q || "diga" in q || "horas" in q || "me" in q) -> time()
+                  "data" in q || "que dia" in q -> date()
+                  "clima" in q || "tempo em" in q || "previsao" in q || "weather" in q -> WeatherTool.fetch(ctx, q)
+                  "parar" in q && ("musica" in q || "music" in q) -> { stopMusic(); "Reprodução interrompida, senhor." }
+                  "tocar" in q || "play " in q -> music(ctx, q)
+                  "abrir" in q || "open " in q -> openApp(ctx, q)
+                  "ligar para" in q || "call " in q -> callContact(ctx, q)
+                  "mensagem" in q || "sms" in q -> sms(ctx, raw, q)
+                  "timer" in q || "cronometro" in q -> timer(ctx, q)
+                  "alarme" in q || "alarm" in q -> alarm(ctx, q)
+                  "volume" in q || "mudo" in q || "mute" in q -> volume(ctx, q)
+                  "wi-fi" in q || "wifi" in q || "internet" in q -> panel(ctx, Settings.Panel.ACTION_INTERNET_CONNECTIVITY, Settings.ACTION_WIFI_SETTINGS)
+                  "bluetooth" in q -> panel(ctx, Settings.Panel.ACTION_BLUETOOTH, Settings.ACTION_BLUETOOTH_SETTINGS)
+                  "pesquisar" in q || "pesquise" in q || "busque" in q || "search" in q -> webSearch(ctx, raw)
+                  "calcule" in q || "quanto e" in q || Regex("\\d+\\s*[+\\-x*/^]").containsMatchIn(q) -> calc(q)
+                  "diagnostico" in q || "status" in q || "relatorio" in q -> diagnostics(ctx)
+                  "quem e voce" in q || "seu nome" in q -> "Sou o ATLAS, sua inteligência assistente local. Processo tudo neste aparelho e respondo com a voz que você merece, senhor."
+                  "obrigado" in q || "thanks" in q -> "Sempre às ordens, senhor."
+                  else -> fallback()
+              }
+
+              private fun flashlight(ctx: Context, q: String): String {
+                  val cm = ctx.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+                  val id = cm.cameraIdList.firstOrNull {
+                      cm.getCameraCharacteristics(it).get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
+                  } ?: return "Este aparelho não possui lanterna, senhor."
+                  val on = when {
+                      "apag" in q || "deslig" in q || "off" in q -> false
+                      "acend" in q || "ligar" in q || "on" in q -> true
+                      else -> !torchOn
+                  }
+                  cm.setTorchMode(id, on); torchOn = on
+                  return if (on) "Lanterna ativada." else "Lanterna desativada."
+              }
+
+              private fun partyMode(ctx: Context): String {
+                  CoroutineScope(Dispatchers.Default).launch {
+                      try {
+                          val cm = ctx.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+                          val id = cm.cameraIdList.first {
+                              cm.getCameraCharacteristics(it).get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
+                          }
+                          repeat(24) { cm.setTorchMode(id, true); delay(90); cm.setTorchMode(id, false); delay(90) }
+                      } catch (_: Exception) {}
+                  }
+                  return "Protocolo Casa de Festas iniciado. Aproveite, senhor."
+              }
+
+              private fun battery(ctx: Context): String {
+                  val bm = ctx.getSystemService(Context.BATTERY_SERVICE) as BatteryManager
+                  val lvl = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
+                  val charging = bm.isCharging
+                  return "Bateria em $lvl por cento${if (charging) " e carregando" else ""}, senhor."
+              }
+
+              private fun time(): String =
+                  "Agora são ${SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date())}, senhor."
+
+              private fun date(): String {
+                  val d = SimpleDateFormat("EEEE, d 'de' MMMM 'de' yyyy", Locale("pt", "BR")).format(Date())
+                  return "Hoje é ${d.replaceFirstChar { it.uppercase() }}, senhor."
+              }
+
+              private fun diagnostics(ctx: Context): String {
+                  val bm = ctx.getSystemService(Context.BATTERY_SERVICE) as BatteryManager
+                  val lvl = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
+                  val am = ctx.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+                  val mi = ActivityManager.MemoryInfo(); am.getMemoryInfo(mi)
+                  val mem = ((mi.totalMem - mi.availMem) * 100 / mi.totalMem).toInt()
+                  return "Diagnóstico concluído. Modelo ${Build.MODEL}, Android ${Build.VERSION.RELEASE}. " +
+                          "Bateria em $lvl por cento. Memória em uso: $mem por cento. Todos os sistemas nominais, senhor."
+              }
+
+              private fun openApp(ctx: Context, q: String): String {
+                  val target = normalize(q.substringAfter("abrir", "").ifEmpty { q.substringAfter("open ", "") })
+                  if (target.isEmpty()) return "Qual aplicativo, senhor?"
+                  if ("configura" in target || "settings" in target) {
+                      ctx.startActivity(Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                      return "Abrindo configurações."
+                  }
+                  val pm = ctx.packageManager
+                  val acts = pm.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0)
+                  val m = acts.map { normalize(it.loadLabel(pm).toString()) to it }
+                      .firstOrNull { it.first.isNotEmpty() && (it.first.contains(target) || target.contains(it.first)) }
+                  return if (m != null) {
+                      pm.getLaunchIntentForPackage(m.second.activityInfo.packageName)?.let {
+                          ctx.startActivity(it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                          "Abrindo ${m.first.replaceFirstChar { c -> c.uppercase() }}."
+                      } ?: "Não consegui abrir esse aplicativo."
+                  } else "Não encontrei o aplicativo \"$target\", senhor."
+              }
+
+              private fun callContact(ctx: Context, q: String): String {
+                  val name = normalize(q.substringAfter("ligar para", "").ifEmpty { q.substringAfter("call ", "") }
+                      .trim().trimEnd('.', '!', '?'))
+                  if (name.isEmpty()) return "Para quem devo ligar, senhor?"
+                  if (ContextCompat.checkSelfPermission(ctx, android.Manifest.permission.READ_CONTACTS)
+                      != android.content.pm.PackageManager.PERMISSION_GRANTED)
+                      return "Preciso da permissão de contatos, senhor. Conceda-a no aplicativo."
+                  ctx.contentResolver.query(
+                      ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
+                      arrayOf(ContactsContract.CommonDataKinds.Phone.NUMBER, ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME),
+                      null, null, null
+                  )?.use { c ->
+                      while (c.moveToNext()) {
+                          val dn = normalize(c.getString(1) ?: continue)
+                          if (dn.contains(name)) {
+                              val num = c.getString(0)
+                              val intent = if (ContextCompat.checkSelfPermission(ctx, android.Manifest.permission.CALL_PHONE)
+                                  == android.content.pm.PackageManager.PERMISSION_GRANTED)
+                                  Intent(Intent.ACTION_CALL, Uri.parse("tel:$num"))
+                              else Intent(Intent.ACTION_DIAL, Uri.parse("tel:$num"))
+                              ctx.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                              return "Ligando para ${c.getString(1)}, senhor."
+                          }
+                      }
+                  }
+                  return "Não encontrei \"$name\" nos contatos, senhor."
+              }
+
+              private fun sms(ctx: Context, raw: String, q: String): String {
+                  val to = q.substringAfter("mensagem para", "").ifEmpty { q.substringAfter("sms para", "") }.trim()
+                  if (to.isEmpty()) return "Para quem devo enviar, senhor?"
+                  val body = raw.substringAfter("dizendo", "").ifEmpty { raw.substringAfter("escrevendo", "") }.trim()
+                  ctx.startActivity(Intent(Intent.ACTION_SENDTO, Uri.parse("smsto:")).apply {
+                      putExtra("sms_body", body); addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                  })
+                  return "Abrindo mensagem para $to."
+              }
+
+              private fun music(ctx: Context, q: String): String {
+                  val query = q.substringAfter("tocar", "").trim().ifEmpty { q.substringAfter("play", "").trim() }
+                  if (query.isEmpty()) return "O que devo tocar, senhor?"
+                  stopMusic()
+                  val sel = "${MediaStore.Audio.Media.IS_MUSIC} != 0 AND ${MediaStore.Audio.Media.TITLE} LIKE ?"
+                  ctx.contentResolver.query(
+                      MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
+                      arrayOf(MediaStore.Audio.Media._ID, MediaStore.Audio.Media.TITLE),
+                      sel, arrayOf("%$query%"), null
+                  )?.use { c ->
+                      if (c.moveToFirst()) {
+                          val uri = ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, c.getLong(0))
+                          val title = c.getString(1)
+                          player = MediaPlayer().apply {
+                              setAudioAttributes(AudioAttributes.Builder()
+                                  .setUsage(AudioAttributes.USAGE_MEDIA)
+                                  .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build())
+                              setDataSource(ctx, uri); prepare(); start()
+                          }
+                          return "Tocando $title, senhor."
+                      }
+                  }
+                  return try {
+                      ctx.startActivity(Intent(MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH).apply {
+                          putExtra(MediaStore.EXTRA_MEDIA_FOCUS, "vnd.android.cursor.item/*")
+                          putExtra("query", query); addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                      })
+                      "Procurando $query no seu aplicativo de música."
+                  } catch (e: Exception) { "Não encontrei a música $query, senhor." }
+              }
+
+              private fun stopMusic() { player?.stop(); player?.release(); player = null }
+
+              private fun timer(ctx: Context, q: String): String {
+                  val m = Regex("(\\d+)\\s*(hora|h\\b|minuto|min|segundo|seg)").find(q)
+                      ?: return "Quantos minutos, senhor?"
+                  val n = m.groupValues[1].toLong()
+                  val unit = m.groupValues[2]
+                  val secs = when { unit.startsWith("hora") || unit == "h" -> n * 3600; unit.startsWith("seg") -> n; else -> n * 60 }
+                  ctx.startActivity(Intent(AlarmClock.ACTION_SET_TIMER).apply {
+                      putExtra(AlarmClock.EXTRA_LENGTH, secs.toInt())
+                      putExtra(AlarmClock.EXTRA_SKIP_UI, true)
+                      putExtra(AlarmClock.EXTRA_DESCRIPTION, "ATLAS")
+                      addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                  })
+                  val pretty = if (secs >= 3600) "${secs / 3600}h${(secs % 3600) / 60}min" else "${secs / 60}min"
+                  return "Timer de $pretty iniciado, senhor."
+              }
+
+              private fun alarm(ctx: Context, q: String): String {
+                  val full = Regex("(\\d{1,2})[:h](\\d{2})").find(q)
+                  val only = if (full == null) Regex("(?:as|às|at)\\s+(\\d{1,2})").find(q) else null
+                  val h: Int; val min: Int
+                  if (full != null) { h = full.groupValues[1].toInt(); min = full.groupValues[2].toInt() }
+                  else if (only != null) { h = only.groupValues[1].toInt(); min = 0 }
+                  else return "Para que horas, senhor?"
+                  ctx.startActivity(Intent(AlarmClock.ACTION_SET_ALARM).apply {
+                      putExtra(AlarmClock.EXTRA_HOUR, h % 24)
+                      putExtra(AlarmClock.EXTRA_MINUTES, min)
+                      putExtra(AlarmClock.EXTRA_SKIP_UI, true)
+                      addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                  })
+                  return "Alarme para %02d:%02d definido, senhor.".format(h % 24, min)
+              }
+
+              private fun volume(ctx: Context, q: String): String {
+                  val am = ctx.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                  return when {
+                      "mudo" in q || "silenc" in q || "mute" in q -> {
+                          am.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_TOGGLE_MUTE, AudioManager.FLAG_SHOW_UI)
+                          "Alternando mudo, senhor."
+                      }
+                      "aumentar" in q || "mais volume" in q || "up" in q -> {
+                          am.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_RAISE, AudioManager.FLAG_SHOW_UI)
+                          "Aumentando o volume."
+                      }
+                      "diminuir" in q || "abaix" in q || "menos volume" in q || "down" in q -> {
+                          am.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_LOWER, AudioManager.FLAG_SHOW_UI)
+                          "Diminuindo o volume."
+                      }
+                      else -> "Diga: aumentar, diminuir ou mudo, senhor."
+                  }
+              }
+
+              private fun panel(ctx: Context, panelAction: String, fallback: String): String {
+                  val i = if (Build.VERSION.SDK_INT >= 29) Intent(panelAction) else Intent(fallback)
+                  return try { ctx.startActivity(i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)); "Abrindo painel de configurações." }
+                  catch (e: Exception) { ctx.startActivity(Intent(fallback).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)); "Abrindo configurações." }
+              }
+
+              private fun webSearch(ctx: Context, raw: String): String {
+                  val query = raw.substringAfter("pesquisar", "").ifEmpty { raw.substringAfter("pesquise", "") }
+                      .ifEmpty { raw.substringAfter("busque", "") }.ifEmpty { raw.substringAfter("search", "") }.trim()
+                  if (query.isEmpty()) return "O que devo pesquisar, senhor?"
+                  ctx.startActivity(Intent(Intent.ACTION_WEB_SEARCH).apply {
+                      putExtra("query", query); addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                  })
+                  return "Pesquisando \"$query\", senhor."
+              }
+
+              private fun calc(q: String): String {
+                  var e = q.substringAfter("calcule", "").ifEmpty { q.substringAfter("quanto e", "") }
+                  mapOf("elevado a" to "^", "elevado" to "^", "dividido por" to "/", "dividido" to "/",
+                        " vezes " to " * ", " mais " to " + ", " menos " to " - ")
+                      .forEach { (k, v) -> e = e.replace(k, v) }
+                  val expr = Regex("[-+*/^().,\\d\\s]{3,}").find(e)?.value?.trim()
+                      ?: return "Não entendi a conta, senhor."
+                  return try {
+                      val r = Calculator.eval(expr.replace(',', '.'))
+                      val pretty = if (r % 1.0 == 0.0) r.toLong().toString()
+                          else String.format(Locale.US, "%.4f", r).trimEnd('0').trimEnd('.')
+                      "O resultado é ${pretty.replace('.', ',')}, senhor."
+                  } catch (e2: Exception) { "Não consegui calcular isso, senhor." }
+              }
+
+              private fun fallback(): String {
+                  return "Comando não reconhecido, senhor. Experimente: acender lanterna, que horas são, " +
+                         "clima em Lisboa, tocar música, ligar para alguém, calcular 12 vezes 8, " +
+                         "ou protocolo casa de festas."
+              }
+          }
+
+          object Calculator {
+              fun eval(expr: String): Double {
+                  val s = expr.replace(" ", "")
+                  var pos = 0
+                  fun peek(): Char? = if (pos < s.length) s[pos] else null
+                  fun parseAtom(): Double {
+                      if (peek() == '(') {
+                          pos++
+                          val v = parseExpr()
+                          if (peek() == ')') pos++
+                          return v
+                      }
+                      val start = pos
+                      while (pos < s.length && (s[pos].isDigit() || s[pos] == '.')) pos++
+                      if (start == pos) throw IllegalArgumentException()
+                      return s.substring(start, pos).toDouble()
+                  }
+                  fun parseUnary(): Double = when (peek()) {
+                      '-' -> { pos++; -parseUnary() }
+                      '+' -> { pos++; parseUnary() }
+                      else -> parseAtom()
+                  }
+                  fun parsePow(): Double {
+                      val base = parseUnary()
+                      return if (peek() == '^') { pos++; Math.pow(base, parsePow()) } else base
+                  }
+                  fun parseTerm(): Double {
+                      var v = parsePow()
+                      while (true) when (peek()) {
+                          '*' -> { pos++; v *= parsePow() }
+                          '/' -> { pos++; v /= parsePow() }
+                          else -> return v
+                      }
+                  }
+                  fun parseExpr(): Double {
+                      var v = parseTerm()
+                      while (true) when (peek()) {
+                          '+' -> { pos++; v += parseTerm() }
+                          '-' -> { pos++; v -= parseTerm() }
+                          else -> return v
+                      }
+                  }
+                  return parseExpr()
+              }
+          }
+          FIM_BRAIN
+
+          # ================= AtlasService.kt =================
+          cat > app/src/main/java/com/atlas/assistant/AtlasService.kt << 'FIM_SERVICE'
+          package com.atlas.assistant
+
+          import android.app.Notification
+          import android.app.NotificationChannel
+          import android.app.NotificationManager
+          import android.app.PendingIntent
+          import android.app.Service
+          import android.content.Context
+          import android.content.Intent
+          import android.content.pm.ServiceInfo
+          import android.media.AudioManager
+          import android.media.ToneGenerator
+          import android.os.Build
+          import android.os.Bundle
+          import android.os.Handler
+          import android.os.IBinder
+          import android.os.Looper
+          import android.speech.RecognitionListener
+          import android.speech.RecognizerIntent
+          import android.speech.SpeechRecognizer
+          import androidx.core.app.NotificationCompat
+          import androidx.core.content.ContextCompat
+          import kotlinx.coroutines.CoroutineScope
+          import kotlinx.coroutines.Dispatchers
+          import kotlinx.coroutines.SupervisorJob
+          import kotlinx.coroutines.cancel
+          import kotlinx.coroutines.flow.MutableStateFlow
+          import kotlinx.coroutines.launch
+          import java.util.Locale
+
+          object Bus {
+              enum class State { IDLE, LISTENING, PROCESSING, SPEAKING }
+              val state = MutableStateFlow(State.IDLE)
+              val heard = MutableStateFlow("")
+              val reply = MutableStateFlow("")
+              val log = MutableStateFlow<List<Pair<String, String>>>(emptyList())
+              fun add(user: String, atlas: String) {
+                  log.value = (listOf(user to atlas) + log.value).take(40)
+              }
+          }
+
+          object Atlas {
+              lateinit var appCtx: Context
+              private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+              fun ask(text: String) {
+                  if (!::appCtx.isInitialized) return
+                  Bus.heard.value = text
+                  Bus.state.value = Bus.State.PROCESSING
+                  scope.launch {
+                      val answer = AtlasBrain.handle(appCtx, text)
+                      Bus.reply.value = answer
+                      Bus.add(text, answer)
+                      VoiceOutput.speak(answer) { Bus.state.value = Bus.State.IDLE }
+                  }
+              }
+          }
+
+          class AtlasService : Service(), RecognitionListener {
+
+              private var recognizer: SpeechRecognizer? = null
+              private var activated = false
+              private var lastActivation = 0L
+              private var tone: ToneGenerator? = null
+              private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+              private val handler = Handler(Looper.getMainLooper())
+
+              private val wakeWords = listOf("jarvis", "jarves", "jarbas", "atlas", "hey atlas", "ok atlas")
+
+              private val commandTimeout = Runnable {
+                  if (activated) { activated = false; Bus.state.value = Bus.State.IDLE }
+                  handler.post { startListening() }
+              }
+
+              override fun onBind(intent: Intent?): IBinder? = null
+
+              override fun onCreate() {
+                  super.onCreate()
+                  val n = buildNotification()
+                  if (Build.VERSION.SDK_INT >= 29)
+                      startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
+                  else startForeground(1, n)
+                  tone = ToneGenerator(AudioManager.STREAM_MUSIC, 90)
+                  VoiceOutput.init(applicationContext)
+                  if (!SpeechRecognizer.isRecognitionAvailable(this)) {
+                      VoiceOutput.speak("Reconhecimento de voz indisponível neste aparelho, senhor.") {}
+                  } else {
+                      handler.postDelayed({ startListening() }, 800)
+                  }
+              }
+
+              private fun buildNotification(): Notification {
+                  val pi = PendingIntent.getActivity(
+                      this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE
+                  )
+                  (getSystemService(NOTIFICATION_SERVICE) as NotificationManager)
+                      .createNotificationChannel(NotificationChannel("atlas", "ATLAS", NotificationManager.IMPORTANCE_LOW))
+                  return NotificationCompat.Builder(this, "atlas")
+                      .setSmallIcon(R.drawable.ic_reactor)
+                      .setContentTitle("ATLAS ativo")
+                      .setContentText("Diga \"Jarvis\" para despertar.")
+                      .setOngoing(true).setContentIntent(pi)
+                      .setCategory(Notification.CATEGORY_SERVICE)
+                      .build()
+              }
+
+              private fun startListening() {
+                  try { recognizer?.destroy() } catch (_: Exception) {}
+                  recognizer = SpeechRecognizer.createSpeechRecognizer(this).apply {
+                      setRecognitionListener(this@AtlasService)
+                      val i = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                          putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                          putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault().toLanguageTag())
+                          putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+                          putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+                          putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
+                      }
+                      try { startListening(i) } catch (_: Exception) {
+                          handler.postDelayed({ startListening() }, 2000)
+                      }
+                  }
+              }
+
+              private fun containsWake(t: String) = wakeWords.any { t.lowercase().contains(it) }
+
+              private fun activate() {
+                  if (activated) return
+                  activated = true
+                  lastActivation = System.currentTimeMillis()
+                  Bus.state.value = Bus.State.LISTENING
+                  tone?.startTone(ToneGenerator.TONE_PROP_BEEP, 150)
+                  recognizer?.stopListening()
+                  handler.postDelayed({ startListening() }, 250)
+                  handler.postDelayed(commandTimeout, 8000)
+              }
+
+              private fun handleCommand(text: String) {
+                  handler.removeCallbacks(commandTimeout)
+                  Bus.heard.value = text
+                  Bus.state.value = Bus.State.PROCESSING
+                  scope.launch {
+                      val answer = AtlasBrain.handle(applicationContext, text)
+                      Bus.reply.value = answer
+                      Bus.add(text, answer)
+                      VoiceOutput.speak(answer) {
+                          activated = false
+                          Bus.state.value = Bus.State.IDLE
+                          handler.post { startListening() }
+                      }
+                  }
+              }
+
+              override fun onPartialResults(partial: Bundle?) {
+                  val t = partial?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull() ?: return
+                  if (!activated && containsWake(t)) activate()
+              }
+
+              override fun onResults(results: Bundle?) {
+                  val t = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull().orEmpty()
+                  when {
+                      activated && t.isNotBlank() -> handleCommand(t)
+                      !activated && containsWake(t) -> activate()
+                      else -> handler.postDelayed({ startListening() }, 300)
+                  }
+              }
+
+              override fun onError(error: Int) {
+                  if (activated && System.currentTimeMillis() - lastActivation > 8000) {
+                      activated = false
+                      Bus.state.value = Bus.State.IDLE
+                  }
+                  val delay = when (error) {
+                      SpeechRecognizer.ERROR_SPEECH_TIMEOUT, SpeechRecognizer.ERROR_NO_MATCH -> 300L
+                      SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> 1000L
+                      else -> 1500L
+                  }
+                  handler.postDelayed({ startListening() }, delay)
+              }
+
+              override fun onReadyForSpeech(params: Bundle?) {}
+              override fun onBeginningOfSpeech() {}
+              override fun onRmsChanged(rmsdB: Float) {}
+              override fun onBufferReceived(buffer: ByteArray?) {}
+              override fun onEndOfSpeech() {}
+              override fun onEvent(eventType: Int, params: Bundle?) {}
+
+              override fun onDestroy() {
+                  recognizer?.destroy(); tone?.release()
+                  handler.removeCallbacksAndMessages(null)
+                  scope.cancel()
+                  super.onDestroy()
+              }
+          }
+          FIM_SERVICE
+
+          # ================= HudScreen.kt =================
+          cat > app/src/main/java/com/atlas/assistant/HudScreen.kt << 'FIM_HUD'
+          package com.atlas.assistant
+
+          import androidx.compose.animation.core.FastOutSlowInEasing
+          import androidx.compose.animation.core.LinearEasing
+          import androidx.compose.animation.core.RepeatMode
+          import androidx.compose.animation.core.animateFloat
+          import androidx.compose.animation.core.infiniteRepeatable
+          import androidx.compose.animation.core.rememberInfiniteTransition
+          import androidx.compose.animation.core.tween
+          import androidx.compose.foundation.Canvas
+          import androidx.compose.foundation.background
+          import androidx.compose.foundation.layout.Arrangement
+          import androidx.compose.foundation.layout.Box
+          import androidx.compose.foundation.layout.Column
+          import androidx.compose.foundation.layout.Row
+          import androidx.compose.foundation.layout.Spacer
+          import androidx.compose.foundation.layout.fillMaxSize
+          import androidx.compose.foundation.layout.fillMaxWidth
+          import androidx.compose.foundation.layout.height
+          import androidx.compose.foundation.layout.padding
+          import androidx.compose.foundation.layout.size
+          import androidx.compose.foundation.layout.width
+          import androidx.compose.foundation.lazy.LazyColumn
+          import androidx.compose.foundation.lazy.rememberLazyListState
+          import androidx.compose.material3.Button
+          import androidx.compose.material3.OutlinedTextField
+          import androidx.compose.material3.Text
+          import androidx.compose.runtime.Composable
+          import androidx.compose.runtime.LaunchedEffect
+          import androidx.compose.runtime.collectAsState
+          import androidx.compose.runtime.getValue
+          import androidx.compose.runtime.mutableStateOf
+          import androidx.compose.runtime.remember
+          import androidx.compose.runtime.setValue
+          import androidx.compose.ui.Alignment
+          import androidx.compose.ui.Modifier
+          import androidx.compose.ui.geometry.Offset
+          import androidx.compose.ui.geometry.Size
+          import androidx.compose.ui.graphics.Brush
+          import androidx.compose.ui.graphics.Color
+          import androidx.compose.ui.graphics.Path
+          import androidx.compose.ui.graphics.drawscope.Stroke
+          import androidx.compose.ui.graphics.graphicsLayer
+          import androidx.compose.ui.text.style.TextAlign
+          import androidx.compose.ui.unit.dp
+          import androidx.compose.ui.unit.sp
+
+          private val CYAN = Color(0xFF00E5FF)
+          private val GOLD = Color(0xFFFFD166)
+          private val GREEN = Color(0xFF00E676)
+          private val AMBER = Color(0xFFFFB300)
+          private val BG = Color(0xFF05070C)
+
+          @Composable
+          fun HudScreen(onSend: (String) -> Unit) {
+              val state by Bus.state.collectAsState()
+              val heard by Bus.heard.collectAsState()
+              val reply by Bus.reply.collectAsState()
+              val log by Bus.log.collectAsState()
+              var input by remember { mutableStateOf("") }
+              val listState = rememberLazyListState()
+
+              LaunchedEffect(log.size) { if (log.isNotEmpty()) listState.animateScrollToItem(0) }
+
+              Column(
+                  Modifier.fillMaxSize().background(BG).padding(20.dp),
+                  horizontalAlignment = Alignment.CenterHorizontally
+              ) {
+                  Text(statusText(state), color = statusColor(state),
+                      fontSize = 13.sp, letterSpacing = 5.sp)
+                  Spacer(Modifier.height(4.dp))
+                  Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { Reactor(state) }
+                  Spacer(Modifier.height(4.dp))
+                  Text(heard.ifEmpty { "Aguardando wake word…" },
+                      color = CYAN.copy(alpha = 0.8f), fontSize = 15.sp, textAlign = TextAlign.Center)
+                  Text(reply, color = GOLD, fontSize = 16.sp, textAlign = TextAlign.Center)
+                  Spacer(Modifier.height(12.dp))
+
+                  LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = listState) {
+                      items(log.size) { i ->
+                          val (u, a) = log[i]
+                          Text("❯ $u", color = CYAN, fontSize = 14.sp)
+                          Text(a, color = GOLD, fontSize = 14.sp)
+                          Spacer(Modifier.height(8.dp))
+                      }
+                  }
+
+                  Row(verticalAlignment = Alignment.CenterVertically) {
+                      OutlinedTextField(
+                          value = input, onValueChange = { input = it },
+                          modifier = Modifier.weight(1f),
+                          placeholder = { Text("Ou digite um comando…", color = Color(0xFF3B4C5C)) }
+                      )
+                      Spacer(Modifier.width(8.dp))
+                      Button(onClick = {
+                          if (input.isNotBlank()) { onSend(input.trim()); input = "" }
+                      }) { Text("ENVIAR") }
+                  }
+              }
+          }
+
+          private fun statusText(s: Bus.State) = when (s) {
+              Bus.State.IDLE -> "DIGA  \"JARVIS\""
+              Bus.State.LISTENING -> "OUVINDO…"
+              Bus.State.PROCESSING -> "PROCESSANDO…"
+              Bus.State.SPEAKING -> "RESPONDENDO…"
+          }
+
+          private fun statusColor(s: Bus.State) = when (s) {
+              Bus.State.IDLE -> CYAN.copy(alpha = 0.5f)
+              Bus.State.LISTENING -> CYAN
+              Bus.State.PROCESSING -> AMBER
+              Bus.State.SPEAKING -> GREEN
+          }
+
+          @Composable
+          fun Reactor(state: Bus.State) {
+              val inf = rememberInfiniteTransition(label = "reactor")
+              val rot by inf.animateFloat(
+                  0f, 360f, infiniteRepeatable(tween(9000, easing = LinearEasing)), label = "rot")
+              val pulse by inf.animateFloat(
+                  0.94f, 1.06f,
+                  infiniteRepeatable(tween(700, easing = FastOutSlowInEasing), RepeatMode.Reverse),
+                  label = "pulse")
+
+              val color = when (state) {
+                  Bus.State.LISTENING -> CYAN
+                  Bus.State.PROCESSING -> AMBER
+                  Bus.State.SPEAKING -> GREEN
+                  else -> CYAN.copy(alpha = 0.55f)
+              }
+              val scale = if (state == Bus.State.LISTENING) pulse else 1f
+
+              Canvas(Modifier.size(250.dp).graphicsLayer {
+                  scaleX = scale; scaleY = scale; rotationZ = rot
+              }) {
+                  val r = size.minDimension / 2f
+                  val c = center
+                  drawCircle(
+                      Brush.radialGradient(
+                          listOf(color.copy(alpha = 0.30f), Color.Transparent),
+                          center = c, radius = r
+                      ), radius = r, center = c
+                  )
+                  repeat(24) { i ->
+                      drawArc(color.copy(alpha = 0.9f), i * 15f + 4f, 7f, false, style = Stroke(5f))
+                  }
+                  repeat(8) { i ->
+                      drawArc(color.copy(alpha = 0.6f), i * 45f + 10f, 22f, false,
+                          topLeft = Offset(c.x - r * 0.66f, c.y - r * 0.66f),
+                          size = Size(r * 1.32f, r * 1.32f), style = Stroke(12f))
+                  }
+                  drawCircle(color, radius = r * 0.34f, center = c, style = Stroke(4f))
+                  drawCircle(
+                      Brush.radialGradient(
+                          listOf(Color.White.copy(alpha = 0.9f), color, Color.Transparent),
+                          center = c, radius = r * 0.3f
+                      ), radius = r * 0.3f, center = c
+                  )
+                  val tri = Path().apply {
+                      moveTo(c.x, c.y - r * 0.18f)
+                      lineTo(c.x + r * 0.16f, c.y + r * 0.12f)
+                      lineTo(c.x - r * 0.16f, c.y + r * 0.12f)
+                      close()
+                  }
+                  drawPath(tri, Color.White.copy(alpha = 0.85f))
+              }
+          }
+
+          @Composable
+          fun PermissionGate(onRequest: () -> Unit) {
+              Column(
+                  Modifier.fillMaxSize().background(BG).padding(32.dp),
+                  Arrangement.Center, Alignment.CenterHorizontally
+              ) {
+                  Text("ATLAS", color = CYAN, fontSize = 42.sp, letterSpacing = 10.sp)
+                  Spacer(Modifier.height(12.dp))
+                  Text("Conceda acesso ao microfone para ativar o despertar por voz.",
+                      color = Color.White, textAlign = TextAlign.Center)
+                  Spacer(Modifier.height(24.dp))
+                  Button(onClick = onRequest) { Text("CONCEDER PERMISSÕES") }
+              }
+          }
+          FIM_HUD
+
+          # ================= MainActivity.kt =================
+          cat > app/src/main/java/com/atlas/assistant/MainActivity.kt << 'FIM_MAIN'
+          package com.atlas.assistant
+
+          import android.Manifest
+          import android.content.Intent
+          import android.content.pm.PackageManager
+          import android.os.Build
+          import android.os.Bundle
+          import androidx.activity.ComponentActivity
+          import androidx.activity.compose.setContent
+          import androidx.activity.result.contract.ActivityResultContracts
+          import androidx.compose.material3.MaterialTheme
+          import androidx.compose.material3.darkColorScheme
+          import androidx.compose.runtime.getValue
+          import androidx.compose.runtime.mutableStateOf
+          import androidx.compose.runtime.setValue
+          import androidx.compose.ui.graphics.Color
+          import androidx.core.content.ContextCompat
+
+          class MainActivity : ComponentActivity() {
+
+              private var micGranted by mutableStateOf(false)
+              private var pendingPerms: Array<String> = emptyArray()
+
+              private val launcher = registerForActivityResult(
+                  ActivityResultContracts.RequestMultiplePermissions()
+              ) { result ->
+                  micGranted = result[Manifest.permission.RECORD_AUDIO] == true
+                  if (micGranted) startAtlas()
+              }
+
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  Atlas.appCtx = applicationContext
+
+                  val wanted = mutableListOf(
+                      Manifest.permission.RECORD_AUDIO,
+                      Manifest.permission.CALL_PHONE,
+                      Manifest.permission.READ_CONTACTS
+                  )
+                  if (Build.VERSION.SDK_INT >= 33) {
+                      wanted += Manifest.permission.POST_NOTIFICATIONS
+                      wanted += Manifest.permission.READ_MEDIA_AUDIO
+                  } else {
+                      wanted += Manifest.permission.READ_EXTERNAL_STORAGE
+                  }
+                  pendingPerms = wanted.filter {
+                      ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+                  }.toTypedArray()
+                  micGranted = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
+                          PackageManager.PERMISSION_GRANTED
+
+                  if (micGranted) startAtlas() else launcher.launch(pendingPerms)
+
+                  setContent {
+                      MaterialTheme(colorScheme = darkColorScheme(background = Color(0xFF05070C))) {
+                          if (micGranted) HudScreen(onSend = { Atlas.ask(it) })
+                          else PermissionGate { launcher.launch(pendingPerms) }
+                      }
+                  }
+              }
+
+              private fun startAtlas() {
+                  VoiceOutput.init(this)
+                  ContextCompat.startForegroundService(this, Intent(this, AtlasService::class.java))
+              }
+          }
+          FIM_MAIN
+
+          # ================= BootReceiver.kt =================
+          cat > app/src/main/java/com/atlas/assistant/BootReceiver.kt << 'FIM_BOOT'
+          package com.atlas.assistant
+
+          import android.Manifest
+          import android.content.BroadcastReceiver
+          import android.content.Context
+          import android.content.Intent
+          import android.content.pm.PackageManager
+          import androidx.core.content.ContextCompat
+
+          class BootReceiver : BroadcastReceiver() {
+              override fun onReceive(context: Context, intent: Intent) {
+                  if (intent.action == Intent.ACTION_BOOT_COMPLETED &&
+                      ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+                      PackageManager.PERMISSION_GRANTED
+                  ) {
+                      try {
+                          ContextCompat.startForegroundService(context, Intent(context, AtlasService::class.java))
+                      } catch (_: Exception) {}
+                  }
+              }
+          }
+          FIM_BOOT
+
+          echo "Projeto gerado com sucesso."
+
+      - name: Compilar APK
+        run: gradle assembleDebug --no-daemon
+
+      - name: Publicar artefato (download via login)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ATLAS-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Publicar Release (link direto, sem login)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ github.run_number }}
+          name: ATLAS v${{ github.run_number }}
+          files: app/build/outputs/apk/debug/app-debug.apk
