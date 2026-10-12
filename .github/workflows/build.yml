@@ -72,8 +72,8 @@ jobs:
                   applicationId = "com.atlas.assistant"
                   minSdk = 26
                   targetSdk = 34
-                  versionCode = 6
-                  versionName = "3.1"
+                  versionCode = 7
+                  versionName = "3.2"
               }
               buildFeatures { compose = true }
               composeOptions { kotlinCompilerExtensionVersion = "1.5.8" }
@@ -1285,13 +1285,9 @@ jobs:
                   }
                   Spacer(Modifier.height(6.dp))
 
-                  Box(Modifier.fillMaxWidth().height(300.dp)) {
-                      HoloRobot(
-                          Modifier.align(Alignment.Center).size(width = 200.dp, height = 290.dp),
-                          alpha = 0.55f
-                      )
+                  Box(Modifier.fillMaxWidth().height(310.dp), contentAlignment = Alignment.Center) {
                       ReactorCore(
-                          Modifier.align(Alignment.Center).size(230.dp),
+                          Modifier.size(290.dp),
                           active = !paused
                       )
                   }
@@ -1497,40 +1493,6 @@ jobs:
                       close()
                   }
                   drawPath(tri, Color.White.copy(alpha = 0.9f * glow))
-              }
-          }
-
-          @Composable
-          private fun HoloRobot(modifier: Modifier, alpha: Float) {
-              val t = rememberInfiniteTransition(label = "bot")
-              val rot by t.animateFloat(0f, 360f, infiniteRepeatable(tween(9000, easing = LinearEasing)), label = "brot")
-              val glow by t.animateFloat(0.5f, 1f, infiniteRepeatable(tween(1400, easing = FastOutSlowInEasing), RepeatMode.Reverse), label = "bglow")
-              Canvas(modifier.graphicsLayer {
-                  rotationY = rot
-                  cameraDistance = 16f * density
-                  this.alpha = alpha
-              }) {
-                  val w = size.width
-                  val h = size.height
-                  val cx = w / 2f
-                  fun lx(fx: Float) = cx + (fx - 0.5f) * w * 0.5f
-                  fun ly(fy: Float) = h * 0.06f + fy * h * 0.86f
-                  val body = NEON.copy(alpha = glow)
-                  drawCircle(NEON.copy(alpha = glow * 0.25f), radius = 6f, center = Offset(lx(0.5f), ly(0.05f)))
-                  drawCircle(body, radius = 3.5f, center = Offset(lx(0.5f), ly(0.05f)))
-                  drawLine(body, Offset(lx(0.5f), ly(0.08f)), Offset(lx(0.5f), ly(0.30f)), strokeWidth = 4f)
-                  drawLine(body, Offset(lx(0.28f), ly(0.14f)), Offset(lx(0.72f), ly(0.14f)), strokeWidth = 3.6f)
-                  drawLine(body, Offset(lx(0.28f), ly(0.14f)), Offset(lx(0.18f), ly(0.42f)), strokeWidth = 3.6f)
-                  drawLine(body, Offset(lx(0.72f), ly(0.14f)), Offset(lx(0.82f), ly(0.42f)), strokeWidth = 3.6f)
-                  drawCircle(body.copy(alpha = glow * 0.6f), radius = 4f, center = Offset(lx(0.18f), ly(0.44f)))
-                  drawCircle(body.copy(alpha = glow * 0.6f), radius = 4f, center = Offset(lx(0.82f), ly(0.44f)))
-                  drawLine(body, Offset(lx(0.5f), ly(0.30f)), Offset(lx(0.42f), ly(0.46f)), strokeWidth = 3.8f)
-                  drawLine(body, Offset(lx(0.5f), ly(0.30f)), Offset(lx(0.58f), ly(0.46f)), strokeWidth = 3.8f)
-                  drawLine(body, Offset(lx(0.42f), ly(0.46f)), Offset(lx(0.40f), ly(0.78f)), strokeWidth = 4f)
-                  drawLine(body, Offset(lx(0.58f), ly(0.46f)), Offset(lx(0.60f), ly(0.78f)), strokeWidth = 4f)
-                  drawLine(body, Offset(lx(0.40f), ly(0.78f)), Offset(lx(0.36f), ly(0.88f)), strokeWidth = 3.6f)
-                  drawLine(body, Offset(lx(0.60f), ly(0.78f)), Offset(lx(0.64f), ly(0.88f)), strokeWidth = 3.6f)
-                  drawCircle(NEON.copy(alpha = glow * 0.12f), radius = h * 0.45f, center = Offset(cx, h * 0.5f))
               }
           }
 
@@ -1850,7 +1812,7 @@ jobs:
           }
           FIM_BOOT
 
-          echo "Projeto 3.1 gerado com sucesso."
+          echo "Projeto 3.2 gerado com sucesso."
 
       - name: Compilar APK
         run: |
@@ -1876,5 +1838,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ github.run_number }}
-          name: ATLAS 3.1 HUD Cinema - v${{ github.run_number }}
+          name: ATLAS 3.2 - v${{ github.run_number }}
           files: app/build/outputs/apk/debug/app-debug.apk
