@@ -72,8 +72,8 @@ jobs:
                   applicationId = "com.atlas.assistant"
                   minSdk = 26
                   targetSdk = 34
-                  versionCode = 3
-                  versionName = "2.1"
+                  versionCode = 4
+                  versionName = "2.2"
               }
               buildFeatures { compose = true }
               composeOptions { kotlinCompilerExtensionVersion = "1.5.8" }
@@ -196,19 +196,48 @@ jobs:
                   }
               }
 
+              /**
+               * CORRECAO PORTUGUES: prioridade absoluta para voz pt-BR.
+               * 1) Voz masculina pt-BR instalada (Ricardo/Homer/etc.)
+               * 2) Qualquer voz pt-BR
+               * 3) setLanguage(pt-BR)
+               * 4) Idioma do aparelho
+               */
               private fun pickVoice() {
                   val t = tts ?: return
-                  val voices = t.voices ?: run { t.language = Locale.UK; return }
-                  val gb = voices.filter {
-                      it.locale.language == "en" &&
-                      (it.locale.country == "GB" || it.name.contains("UK", true) || it.name.contains("United Kingdom", true))
+                  try {
+                      val voices = t.voices
+                      if (voices != null) {
+                          val pt = voices.filter { v ->
+                              v.locale.language == "pt" &&
+                                  (v.locale.country == "BR" ||
+                                   v.name.contains("BR", true) ||
+                                   v.name.contains("brazil", true) ||
+                                   v.name.contains("brasil", true))
+                          }
+                          val malePt = pt.firstOrNull {
+                              Regex("ricardo|homer|male|masculin|joaquim|felipe|thiago|marco",
+                                  RegexOption.IGNORE_CASE).containsMatchIn(it.name)
+                          }
+                          val chosen = malePt ?: pt.firstOrNull()
+                          if (chosen != null) {
+                              t.voice = chosen
+                              t.language = chosen.locale
+                              t.setPitch(0.95f)
+                              t.setSpeechRate(1.02f)
+                              return
+                          }
+                      }
+                      val res = t.setLanguage(Locale("pt", "BR"))
+                      if (res == TextToSpeech.LANG_MISSING_DATA ||
+                          res == TextToSpeech.LANG_NOT_SUPPORTED) {
+                          t.setLanguage(Locale.getDefault())
+                      }
+                      t.setPitch(0.95f)
+                      t.setSpeechRate(1.02f)
+                  } catch (_: Exception) {
+                      try { t.setLanguage(Locale.getDefault()) } catch (_: Exception) {}
                   }
-                  val male = gb.firstOrNull {
-                      Regex("ryan|daniel|arthur|george|male", RegexOption.IGNORE_CASE).containsMatchIn(it.name)
-                  }
-                  (male ?: gb.firstOrNull())?.let { t.voice = it; t.language = it.locale } ?: run { t.language = Locale.UK }
-                  t.setPitch(0.92f)
-                  t.setSpeechRate(1.02f)
               }
 
               fun stop() {
@@ -1030,6 +1059,7 @@ jobs:
           import androidx.compose.ui.geometry.CornerRadius
           import androidx.compose.ui.geometry.Offset
           import androidx.compose.ui.geometry.Size
+          import androidx.compose.ui.graphics.Brush
           import androidx.compose.ui.graphics.Color
           import androidx.compose.ui.graphics.drawscope.Stroke
           import androidx.compose.ui.graphics.drawscope.rotate
@@ -1038,20 +1068,25 @@ jobs:
           import androidx.compose.ui.text.style.TextAlign
           import androidx.compose.ui.unit.dp
           import androidx.compose.ui.unit.sp
+          import kotlin.math.abs
+          import kotlin.math.cos
+          import kotlin.math.sin
 
           private val CYAN = Color(0xFF00E5FF)
+          private val NEON_DEEP = Color(0xFF0891B2)
+          private val NEON_DARK = Color(0xFF155E75)
           private val GOLD = Color(0xFFFFD166)
           private val GREEN = Color(0xFF00E676)
           private val AMBER = Color(0xFFFFB300)
           private val BG = Color(0xFF05070C)
-          private val PANEL = Color(0xFF0A1220)
+          private val PANEL = Color(0xFF060D18)
 
           @Composable
           private fun PanelBox(content: @Composable () -> Unit) {
               Box(
                   Modifier
                       .fillMaxWidth()
-                      .border(1.dp, CYAN.copy(alpha = 0.35f), RoundedCornerShape(14.dp))
+                      .border(1.dp, NEON_DEEP.copy(alpha = 0.5f), RoundedCornerShape(14.dp))
                       .background(PANEL, RoundedCornerShape(14.dp))
                       .padding(10.dp)
               ) { content() }
@@ -1073,61 +1108,82 @@ jobs:
               LaunchedEffect(log.size) { if (log.isNotEmpty()) listState.animateScrollToItem(0) }
 
               Column(
-                  Modifier.fillMaxSize().background(BG).padding(12.dp),
+                  Modifier.fillMaxSize().background(BG).padding(10.dp),
                   horizontalAlignment = Alignment.CenterHorizontally
               ) {
                   Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                      Box(Modifier.weight(1f)) { PanelBox { GlobePanel() } }
-                      Box(Modifier.weight(1f)) { PanelBox { RadarPanel() } }
+                      Box(Modifier.weight(1f)) {
+                          PanelBox {
+                              Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                  GlobePanel()
+                                  Spacer(Modifier.height(4.dp))
+                                  Text("TERRA  N33", color = NEON_DEEP, fontSize = 10.sp, letterSpacing = 2.sp)
+                                  Text("NWO  ATIVADO", color = GREEN, fontSize = 10.sp, letterSpacing = 2.sp)
+                              }
+                          }
+                      }
+                      Box(Modifier.weight(1f)) {
+                          PanelBox {
+                              Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                  RadarPanel()
+                                  Spacer(Modifier.height(4.dp))
+                                  Text("RASTREAMENTO", color = NEON_DEEP, fontSize = 10.sp, letterSpacing = 2.sp)
+                                  Text("SISTEMA ONLINE", color = GREEN, fontSize = 10.sp, letterSpacing = 2.sp)
+                              }
+                          }
+                      }
                   }
-                  Spacer(Modifier.height(8.dp))
+                  Spacer(Modifier.height(6.dp))
 
-                  Text("ATLAS", color = CYAN, fontSize = 34.sp, letterSpacing = 12.sp)
+                  RobotPanel(listening = state == Bus.State.LISTENING && !paused)
+                  Text("ATLAS", color = CYAN, fontSize = 26.sp, letterSpacing = 14.sp)
                   Spacer(Modifier.height(2.dp))
                   Text(
                       if (paused) "MODO DESCANSO" else statusText(state),
                       color = if (paused) AMBER else statusColor(state),
-                      fontSize = 12.sp, letterSpacing = 4.sp
+                      fontSize = 11.sp, letterSpacing = 4.sp
                   )
                   Spacer(Modifier.height(4.dp))
+
                   MicOrb(listening = state == Bus.State.LISTENING && !paused)
                   Spacer(Modifier.height(6.dp))
 
                   PanelBox {
                       Column {
-                          Text("[SEGURANCA] CRIPTOGRAFIA ATIVA", color = GREEN, fontSize = 11.sp, letterSpacing = 1.sp)
+                          Text("[STATUS] SISTEMAS OPERACIONAIS", color = GREEN, fontSize = 10.sp, letterSpacing = 1.sp)
+                          Text("[MONITOR] ANALISE EM TEMPO REAL", color = GREEN, fontSize = 10.sp, letterSpacing = 1.sp)
                           Text(
                               if (paused) "[AUDIO] RECONHECIMENTO EM PAUSA"
                               else "[AUDIO] RECONHECIMENTO DE VOZ ATIVO",
-                              color = if (paused) AMBER else GREEN, fontSize = 11.sp, letterSpacing = 1.sp
+                              color = if (paused) AMBER else GREEN, fontSize = 10.sp, letterSpacing = 1.sp
                           )
                           val aiLabel = AiTool.providers.firstOrNull { it.id == aiActive }?.label ?: "LOCAL"
-                          Text("[REDE] IA ATIVA: $aiLabel", color = CYAN, fontSize = 11.sp, letterSpacing = 1.sp)
-                          Text("[DADOS] PROCESSANDO CONSULTA DO USUARIO", color = CYAN.copy(alpha = 0.7f), fontSize = 11.sp)
+                          Text("[REDE] IA ATIVA: $aiLabel", color = CYAN, fontSize = 10.sp, letterSpacing = 1.sp)
+                          Text("[DADOS] PROCESSANDO CONSULTA DO USUARIO", color = CYAN.copy(alpha = 0.7f), fontSize = 10.sp)
                       }
                   }
-                  Spacer(Modifier.height(8.dp))
+                  Spacer(Modifier.height(6.dp))
 
                   PanelBox {
                       Text(
                           heard.ifEmpty { "Aguardando comando..." },
-                          color = CYAN.copy(alpha = 0.85f), fontSize = 13.sp
+                          color = CYAN.copy(alpha = 0.85f), fontSize = 12.sp
                       )
                       Text(
                           reply.ifEmpty { "ATLAS ONLINE. TODOS OS SISTEMAS CARREGADOS E PRONTOS PARA USO." },
-                          color = GOLD, fontSize = 14.sp
+                          color = GOLD, fontSize = 13.sp
                       )
                       Spacer(Modifier.height(6.dp))
                       LoaderBars()
                   }
 
-                  Spacer(Modifier.height(8.dp))
+                  Spacer(Modifier.height(6.dp))
                   LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = listState) {
                       items(log.size) { i ->
                           val (u, a) = log[i]
-                          Text("VOCE: $u", color = CYAN, fontSize = 13.sp)
-                          Text("ATLAS: $a", color = GOLD, fontSize = 13.sp)
-                          Spacer(Modifier.height(6.dp))
+                          Text("VOCE: $u", color = CYAN, fontSize = 12.sp)
+                          Text("ATLAS: $a", color = GOLD, fontSize = 12.sp)
+                          Spacer(Modifier.height(5.dp))
                       }
                   }
 
@@ -1139,17 +1195,17 @@ jobs:
                               if (p) VoiceOutput.stop()
                           },
                           colors = if (paused) ButtonDefaults.buttonColors(containerColor = AMBER)
-                          else ButtonDefaults.buttonColors(containerColor = Color(0xFF123243)),
+                          else ButtonDefaults.buttonColors(containerColor = Color(0xFF0E3A4D)),
                           modifier = Modifier.weight(1f)
                       ) { Text(if (paused) "ACORDAR" else "DESCANSO", fontSize = 12.sp) }
 
                       Button(
                           onClick = { showAi = true },
-                          colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF123243)),
+                          colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0E3A4D)),
                           modifier = Modifier.weight(1f)
                       ) { Text("IA", fontSize = 12.sp) }
                   }
-                  Spacer(Modifier.height(6.dp))
+                  Spacer(Modifier.height(5.dp))
                   Row(verticalAlignment = Alignment.CenterVertically) {
                       OutlinedTextField(
                           value = input, onValueChange = { input = it },
@@ -1187,112 +1243,173 @@ jobs:
               Bus.State.SPEAKING -> GREEN
           }
 
+          /** Globo wireframe com meridianos girando (azul neon profundo) */
           @Composable
           private fun GlobePanel() {
               val t = rememberInfiniteTransition(label = "globe")
               val rot by t.animateFloat(
-                  0f, 360f,
-                  infiniteRepeatable(tween(14000, easing = LinearEasing)), label = "grot"
+                  0f, 1f,
+                  infiniteRepeatable(tween(12000, easing = LinearEasing)), label = "grot"
               )
-              Canvas(Modifier.fillMaxWidth().height(96.dp).graphicsLayer { rotationZ = rot }) {
-                  val r = size.minDimension / 2f
+              Canvas(Modifier.fillMaxWidth().height(100.dp)) {
+                  val r = size.minDimension / 2f * 0.92f
                   val c = center
-                  drawCircle(Color(0xFF06263A), radius = r, center = c)
-                  drawCircle(CYAN.copy(alpha = 0.8f), radius = r, center = c, style = Stroke(2f))
-                  drawOval(
-                      CYAN.copy(alpha = 0.5f),
-                      topLeft = Offset(c.x - r * 0.45f, c.y - r),
-                      size = Size(r * 0.9f, r * 2f), style = Stroke(1.5f)
-                  )
-                  drawOval(
-                      CYAN.copy(alpha = 0.35f),
-                      topLeft = Offset(c.x - r * 0.8f, c.y - r),
-                      size = Size(r * 1.6f, r * 2f), style = Stroke(1f)
-                  )
-                  drawLine(
-                      CYAN.copy(alpha = 0.5f),
-                      Offset(c.x - r, c.y), Offset(c.x + r, c.y), strokeWidth = 1.5f
-                  )
-                  drawLine(
-                      CYAN.copy(alpha = 0.35f),
-                      Offset(c.x - r, c.y - r * 0.45f), Offset(c.x + r, c.y - r * 0.45f), strokeWidth = 1f
-                  )
-                  drawLine(
-                      CYAN.copy(alpha = 0.35f),
-                      Offset(c.x - r, c.y + r * 0.45f), Offset(c.x + r, c.y + r * 0.45f), strokeWidth = 1f
-                  )
+                  drawCircle(Color(0xFF04121E), radius = r, center = c)
+                  drawCircle(NEON_DEEP.copy(alpha = 0.9f), radius = r, center = c, style = Stroke(2f))
+                  for (i in 0 until 6) {
+                      val phase = (rot + i / 6f) % 1f
+                      val w = abs(cos(phase * 6.2831853f)) * r
+                      drawOval(
+                          NEON_DARK.copy(alpha = 0.75f),
+                          topLeft = Offset(c.x - w, c.y - r),
+                          size = Size(w * 2f, r * 2f), style = Stroke(1.2f)
+                      )
+                  }
+                  for (i in -2..2) {
+                      val y = c.y + r * i * 0.38f
+                      val half = r * (1f - (i * i) * 0.12f)
+                      drawLine(
+                          NEON_DARK.copy(alpha = 0.6f),
+                          Offset(c.x - half, y), Offset(c.x + half, y), strokeWidth = 1.2f
+                      )
+                  }
+                  drawCircle(CYAN.copy(alpha = 0.10f), radius = r, center = c)
               }
           }
 
+          /** Radar com leque de varredura em degradê e blips */
           @Composable
           private fun RadarPanel() {
               val t = rememberInfiniteTransition(label = "radar")
               val rot by t.animateFloat(
                   0f, 360f,
-                  infiniteRepeatable(tween(2600, easing = LinearEasing)), label = "rrot"
+                  infiniteRepeatable(tween(2400, easing = LinearEasing)), label = "rrot"
               )
               val blink by t.animateFloat(
                   0.15f, 1f,
                   infiniteRepeatable(tween(900, easing = FastOutSlowInEasing), RepeatMode.Reverse), label = "blink"
               )
-              Canvas(Modifier.fillMaxWidth().height(96.dp)) {
-                  val r = size.minDimension / 2f
+              Canvas(Modifier.fillMaxWidth().height(100.dp)) {
+                  val r = size.minDimension / 2f * 0.92f
                   val c = center
-                  drawCircle(CYAN.copy(alpha = 0.15f), radius = r, center = c)
-                  drawCircle(CYAN.copy(alpha = 0.7f), radius = r, center = c, style = Stroke(2f))
-                  drawCircle(CYAN.copy(alpha = 0.4f), radius = r * 0.66f, center = c, style = Stroke(1.5f))
-                  drawCircle(CYAN.copy(alpha = 0.4f), radius = r * 0.33f, center = c, style = Stroke(1.5f))
+                  drawCircle(Color(0xFF04121E), radius = r, center = c)
+                  drawCircle(CYAN.copy(alpha = 0.12f), radius = r, center = c)
+                  drawCircle(CYAN.copy(alpha = 0.8f), radius = r, center = c, style = Stroke(2f))
+                  drawCircle(CYAN.copy(alpha = 0.45f), radius = r * 0.66f, center = c, style = Stroke(1.2f))
+                  drawCircle(CYAN.copy(alpha = 0.45f), radius = r * 0.33f, center = c, style = Stroke(1.2f))
                   rotate(rot, pivot = c) {
+                      drawArc(
+                          brush = Brush.sweepGradient(
+                              listOf(CYAN.copy(alpha = 0.50f), Color.Transparent),
+                              center = c
+                          ),
+                          startAngle = 0f, sweepAngle = 120f, useCenter = true
+                      )
                       drawLine(CYAN, c, Offset(c.x, c.y - r), strokeWidth = 2.5f)
                   }
-                  drawCircle(GREEN.copy(alpha = blink), radius = 4f, center = Offset(c.x + r * 0.35f, c.y - r * 0.25f))
-                  drawCircle(GREEN.copy(alpha = 1f - blink * 0.5f), radius = 3f, center = Offset(c.x - r * 0.4f, c.y + r * 0.3f))
-                  drawCircle(Color.White.copy(alpha = blink * 0.8f), radius = 2.5f, center = Offset(c.x + r * 0.1f, c.y + r * 0.45f))
+                  drawCircle(GREEN.copy(alpha = blink), radius = 4.5f, center = Offset(c.x + r * 0.35f, c.y - r * 0.25f))
+                  drawCircle(GREEN.copy(alpha = 1f - blink * 0.5f), radius = 3.5f, center = Offset(c.x - r * 0.4f, c.y + r * 0.3f))
+                  drawCircle(Color.White.copy(alpha = blink * 0.9f), radius = 2.8f, center = Offset(c.x + r * 0.1f, c.y + r * 0.45f))
               }
           }
 
+          /** Robo holografico girando em 3D com pulso de brilho */
+          @Composable
+          private fun RobotPanel(listening: Boolean) {
+              val t = rememberInfiniteTransition(label = "robot")
+              val rot by t.animateFloat(
+                  0f, 360f,
+                  infiniteRepeatable(tween(7000, easing = LinearEasing)), label = "yrot"
+              )
+              val glow by t.animateFloat(
+                  0.55f, 1f,
+                  infiniteRepeatable(tween(1100, easing = FastOutSlowInEasing), RepeatMode.Reverse), label = "glow"
+              )
+              val pulse by t.animateFloat(
+                  0.97f, 1.03f,
+                  infiniteRepeatable(tween(900, easing = FastOutSlowInEasing), RepeatMode.Reverse), label = "rp"
+              )
+              Canvas(
+                  Modifier
+                      .fillMaxWidth()
+                      .height(150.dp)
+                      .graphicsLayer {
+                          rotationY = rot
+                          cameraDistance = 14f * density
+                          scaleX = pulse
+                          scaleY = pulse
+                      }
+              ) {
+                  val w = size.width
+                  val h = size.height
+                  val cx = w / 2f
+                  fun lx(fx: Float) = cx + (fx - 0.5f) * w * 0.34f
+                  fun ly(fy: Float) = h * 0.08f + fy * h * 0.84f
+                  val body = CYAN.copy(alpha = glow)
+                  val halo = CYAN.copy(alpha = glow * 0.18f)
+                  drawCircle(halo, radius = 5f, center = Offset(lx(0.5f), ly(0.06f)))
+                  drawCircle(body, radius = 3.2f, center = Offset(lx(0.5f), ly(0.06f)))
+                  drawLine(body, Offset(lx(0.5f), ly(0.09f)), Offset(lx(0.5f), ly(0.24f)), strokeWidth = 3.4f)
+                  drawLine(body, Offset(lx(0.32f), ly(0.13f)), Offset(lx(0.68f), ly(0.13f)), strokeWidth = 3f)
+                  drawLine(body, Offset(lx(0.32f), ly(0.13f)), Offset(lx(0.24f), ly(0.38f)), strokeWidth = 3f)
+                  drawLine(body, Offset(lx(0.68f), ly(0.13f)), Offset(lx(0.76f), ly(0.38f)), strokeWidth = 3f)
+                  drawLine(body, Offset(lx(0.5f), ly(0.24f)), Offset(lx(0.44f), ly(0.32f)), strokeWidth = 3f)
+                  drawLine(body, Offset(lx(0.5f), ly(0.24f)), Offset(lx(0.56f), ly(0.32f)), strokeWidth = 3f)
+                  drawLine(body, Offset(lx(0.44f), ly(0.32f)), Offset(lx(0.42f), ly(0.62f)), strokeWidth = 3.2f)
+                  drawLine(body, Offset(lx(0.56f), ly(0.32f)), Offset(lx(0.58f), ly(0.62f)), strokeWidth = 3.2f)
+                  drawLine(body, Offset(lx(0.42f), ly(0.62f)), Offset(lx(0.38f), ly(0.66f)), strokeWidth = 3f)
+                  drawLine(body, Offset(lx(0.58f), ly(0.62f)), Offset(lx(0.62f), ly(0.66f)), strokeWidth = 3f)
+                  drawCircle(halo, radius = h * 0.42f, center = Offset(cx, h * 0.5f))
+              }
+          }
+
+          /** Microfone pulsante cercado por equalizador radial de 36 barras */
           @Composable
           private fun MicOrb(listening: Boolean) {
               val t = rememberInfiniteTransition(label = "mic")
               val pulse by t.animateFloat(
-                  0.95f, 1.06f,
-                  infiniteRepeatable(tween(650, easing = FastOutSlowInEasing), RepeatMode.Reverse), label = "mp"
+                  0.95f, 1.07f,
+                  infiniteRepeatable(tween(600, easing = FastOutSlowInEasing), RepeatMode.Reverse), label = "mp"
               )
-              val rot by t.animateFloat(
-                  0f, 360f,
-                  infiniteRepeatable(tween(9000, easing = LinearEasing)), label = "mr"
+              val wave by t.animateFloat(
+                  0f, 6.2831853f,
+                  infiniteRepeatable(tween(1600, easing = LinearEasing)), label = "mw"
               )
               val scale = if (listening) pulse else 1f
               Canvas(
                   Modifier
-                      .size(130.dp)
+                      .size(160.dp)
                       .graphicsLayer { scaleX = scale; scaleY = scale }
               ) {
                   val r = size.minDimension / 2f
                   val c = center
-                  drawCircle(CYAN.copy(alpha = 0.10f), radius = r, center = c)
-                  rotate(rot, pivot = c) {
-                      repeat(24) { i ->
-                          drawArc(CYAN.copy(alpha = 0.55f), i * 15f + 4f, 7f, false, style = Stroke(3f))
-                      }
+                  val inner = r * 0.72f
+                  for (i in 0 until 36) {
+                      val a = i * 0.174533f
+                      val len = r * 0.16f * (0.35f + 0.65f * abs(sin(i * 1.9f + wave * 3f)))
+                      drawLine(
+                          CYAN.copy(alpha = 0.75f),
+                          Offset(c.x + cos(a) * inner, c.y + sin(a) * inner),
+                          Offset(c.x + cos(a) * (inner + len), c.y + sin(a) * (inner + len)),
+                          strokeWidth = 3.5f
+                      )
                   }
-                  drawCircle(CYAN.copy(alpha = 0.22f), radius = r * 0.62f, center = c)
-                  val mw = r * 0.30f
+                  drawCircle(CYAN.copy(alpha = 0.10f), radius = inner, center = c)
+                  drawCircle(CYAN.copy(alpha = 0.30f), radius = inner * 0.88f, center = c, style = Stroke(2f))
+                  val mw = inner * 0.34f
                   drawRoundRect(
                       CYAN,
-                      topLeft = Offset(c.x - mw / 2f, c.y - r * 0.34f),
-                      size = Size(mw, r * 0.48f),
+                      topLeft = Offset(c.x - mw / 2f, c.y - inner * 0.42f),
+                      size = Size(mw, inner * 0.58f),
                       cornerRadius = CornerRadius(mw / 2f, mw / 2f)
                   )
                   drawArc(
                       CYAN, 0f, 180f, false,
-                      topLeft = Offset(c.x - mw * 0.75f, c.y - r * 0.10f),
-                      size = Size(mw * 1.5f, mw * 1.5f), style = Stroke(4f)
+                      topLeft = Offset(c.x - mw * 0.78f, c.y - inner * 0.10f),
+                      size = Size(mw * 1.56f, mw * 1.56f), style = Stroke(4f)
                   )
-                  drawLine(
-                      CYAN,
-                      Offset(c.x, c.y + r * 0.24f), Offset(c.x, c.y + r * 0.40f), strokeWidth = 4f
-                  )
+                  drawLine(CYAN, Offset(c.x, c.y + inner * 0.28f), Offset(c.x, c.y + inner * 0.48f), strokeWidth = 4f)
+                  drawLine(CYAN, Offset(c.x - inner * 0.24f, c.y + inner * 0.40f), Offset(c.x + inner * 0.24f, c.y + inner * 0.40f), strokeWidth = 4f)
               }
           }
 
@@ -1305,16 +1422,16 @@ jobs:
               val eq by t.animateFloat(0.25f, 1f, infiniteRepeatable(tween(500, easing = FastOutSlowInEasing), RepeatMode.Reverse), label = "eq")
               Column {
                   LoaderRow("SISTEMAS", b1)
-                  Spacer(Modifier.height(4.dp))
+                  Spacer(Modifier.height(3.dp))
                   LoaderRow("NUCLEO", b2)
-                  Spacer(Modifier.height(4.dp))
+                  Spacer(Modifier.height(3.dp))
                   LoaderRow("REDE", b3)
               }
-              Spacer(Modifier.height(8.dp))
+              Spacer(Modifier.height(6.dp))
               Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                   val heights = listOf(0.9f, 0.55f, eq, 0.4f, 0.7f)
                   heights.forEach { h ->
-                      Canvas(Modifier.size(width = 22.dp, height = 34.dp)) {
+                      Canvas(Modifier.size(width = 22.dp, height = 30.dp)) {
                           val bh = size.height * h
                           drawRoundRect(
                               CYAN.copy(alpha = 0.9f),
@@ -1330,18 +1447,18 @@ jobs:
           @Composable
           private fun LoaderRow(label: String, frac: Float) {
               Row(verticalAlignment = Alignment.CenterVertically) {
-                  Text(label, color = CYAN.copy(alpha = 0.6f), fontSize = 10.sp, modifier = Modifier.width(64.dp))
+                  Text(label, color = CYAN.copy(alpha = 0.6f), fontSize = 9.sp, modifier = Modifier.width(64.dp))
                   Box(
                       Modifier
                           .weight(1f)
                           .height(4.dp)
-                          .background(Color(0xFF123243), RoundedCornerShape(2.dp))
+                          .background(Color(0xFF0E3A4D), RoundedCornerShape(2.dp))
                   ) {
                       Box(
                           Modifier
                               .fillMaxWidth(frac)
                               .height(4.dp)
-                              .background(CYAN, RoundedCornerShape(2.dp))
+                              .background(NEON_DEEP, RoundedCornerShape(2.dp))
                       )
                   }
               }
@@ -1381,8 +1498,8 @@ jobs:
                                           model = AiTool.getModel(ctx, p.id)
                                       },
                                       colors = if (selected == p.id)
-                                          ButtonDefaults.buttonColors(containerColor = CYAN)
-                                      else ButtonDefaults.buttonColors(containerColor = Color(0xFF123243)),
+                                          ButtonDefaults.buttonColors(containerColor = NEON_DEEP)
+                                      else ButtonDefaults.buttonColors(containerColor = Color(0xFF0E3A4D)),
                                       contentPadding = androidx.compose.foundation.layout.PaddingValues(6.dp)
                                   ) { Text(p.label, fontSize = 10.sp) }
                               }
@@ -1513,7 +1630,7 @@ jobs:
           }
           FIM_BOOT
 
-          echo "Projeto 2.1 gerado com sucesso."
+          echo "Projeto 2.2 gerado com sucesso."
 
       - name: Compilar APK
         run: |
@@ -1539,5 +1656,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ github.run_number }}
-          name: ATLAS 2.1 - v${{ github.run_number }}
+          name: ATLAS 2.2 PT-BR - v${{ github.run_number }}
           files: app/build/outputs/apk/debug/app-debug.apk
