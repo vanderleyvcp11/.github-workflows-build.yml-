@@ -72,8 +72,8 @@ jobs:
                   applicationId = "com.atlas.assistant"
                   minSdk = 26
                   targetSdk = 34
-                  versionCode = 2
-                  versionName = "2.0"
+                  versionCode = 3
+                  versionName = "2.1"
               }
               buildFeatures { compose = true }
               composeOptions { kotlinCompilerExtensionVersion = "1.5.8" }
@@ -1030,9 +1030,9 @@ jobs:
           import androidx.compose.ui.geometry.CornerRadius
           import androidx.compose.ui.geometry.Offset
           import androidx.compose.ui.geometry.Size
-          import androidx.compose.ui.graphics.Brush
           import androidx.compose.ui.graphics.Color
           import androidx.compose.ui.graphics.drawscope.Stroke
+          import androidx.compose.ui.graphics.drawscope.rotate
           import androidx.compose.ui.graphics.graphicsLayer
           import androidx.compose.ui.platform.LocalContext
           import androidx.compose.ui.text.style.TextAlign
@@ -1095,15 +1095,15 @@ jobs:
 
                   PanelBox {
                       Column {
-                          Text("[SEGURANÇA] CRIPTOGRAFIA ATIVA", color = GREEN, fontSize = 11.sp, letterSpacing = 1.sp)
+                          Text("[SEGURANCA] CRIPTOGRAFIA ATIVA", color = GREEN, fontSize = 11.sp, letterSpacing = 1.sp)
                           Text(
-                              if (paused) "[ÁUDIO] RECONHECIMENTO EM PAUSA"
-                              else "[ÁUDIO] RECONHECIMENTO DE VOZ ATIVO",
+                              if (paused) "[AUDIO] RECONHECIMENTO EM PAUSA"
+                              else "[AUDIO] RECONHECIMENTO DE VOZ ATIVO",
                               color = if (paused) AMBER else GREEN, fontSize = 11.sp, letterSpacing = 1.sp
                           )
                           val aiLabel = AiTool.providers.firstOrNull { it.id == aiActive }?.label ?: "LOCAL"
                           Text("[REDE] IA ATIVA: $aiLabel", color = CYAN, fontSize = 11.sp, letterSpacing = 1.sp)
-                          Text("[DADOS] PROCESSANDO CONSULTA DO USUÁRIO", color = CYAN.copy(alpha = 0.7f), fontSize = 11.sp)
+                          Text("[DADOS] PROCESSANDO CONSULTA DO USUARIO", color = CYAN.copy(alpha = 0.7f), fontSize = 11.sp)
                       }
                   }
                   Spacer(Modifier.height(8.dp))
@@ -1125,7 +1125,7 @@ jobs:
                   LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = listState) {
                       items(log.size) { i ->
                           val (u, a) = log[i]
-                          Text("VOCÊ: $u", color = CYAN, fontSize = 13.sp)
+                          Text("VOCE: $u", color = CYAN, fontSize = 13.sp)
                           Text("ATLAS: $a", color = GOLD, fontSize = 13.sp)
                           Spacer(Modifier.height(6.dp))
                       }
@@ -1306,7 +1306,7 @@ jobs:
               Column {
                   LoaderRow("SISTEMAS", b1)
                   Spacer(Modifier.height(4.dp))
-                  LoaderRow("NÚCLEO", b2)
+                  LoaderRow("NUCLEO", b2)
                   Spacer(Modifier.height(4.dp))
                   LoaderRow("REDE", b3)
               }
@@ -1363,12 +1363,12 @@ jobs:
                       }) { Text("SALVAR") }
                   },
                   dismissButton = { TextButton(onClick = onClose) { Text("FECHAR") } },
-                  title = { Text("INTELIGÊNCIAS", color = CYAN, fontSize = 18.sp) },
+                  title = { Text("INTELIGENCIAS", color = CYAN, fontSize = 18.sp) },
                   text = {
                       Column {
                           Text(
                               "Escolha a IA e cole sua chave de API. " +
-                              "Groq é gratuita em console.groq.com. OpenRouter tem modelos grátis.",
+                              "Groq e gratuita em console.groq.com. OpenRouter tem modelos gratis.",
                               color = Color(0xFF9FB3C8), fontSize = 12.sp
                           )
                           Spacer(Modifier.height(10.dp))
@@ -1513,7 +1513,7 @@ jobs:
           }
           FIM_BOOT
 
-          echo "Projeto 2.0 gerado com sucesso."
+          echo "Projeto 2.1 gerado com sucesso."
 
       - name: Compilar APK
         run: |
@@ -1539,5 +1539,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ github.run_number }}
-          name: ATLAS 2.0 - v${{ github.run_number }}
+          name: ATLAS 2.1 - v${{ github.run_number }}
           files: app/build/outputs/apk/debug/app-debug.apk
