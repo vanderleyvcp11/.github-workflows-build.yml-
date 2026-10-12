@@ -72,8 +72,8 @@ jobs:
                   applicationId = "com.atlas.assistant"
                   minSdk = 26
                   targetSdk = 34
-                  versionCode = 8
-                  versionName = "3.3"
+                  versionCode = 9
+                  versionName = "3.4"
               }
               buildFeatures { compose = true }
               composeOptions { kotlinCompilerExtensionVersion = "1.5.8" }
@@ -398,28 +398,39 @@ jobs:
 
               private const val SYS = "Voce e o ATLAS, um assistente pessoal de voz no estilo do Jarvis do Homem de Ferro. Responda sempre em portugues do Brasil, com no maximo 3 frases, de forma elegante, direta e util, tratando o usuario como senhor."
 
+              private fun prefs(ctx: Context) =
+                  ctx.getSharedPreferences("atlas", Context.MODE_PRIVATE)
+
               fun activeId(ctx: Context): String? =
-                  ctx.getSharedPreferences("atlas", Context.MODE_PRIVATE).getString("ai_active", null)
+                  prefs(ctx).getString("ai_active", null)
 
               fun isConfigured(ctx: Context): Boolean {
                   val id = activeId(ctx) ?: return false
                   return getKey(ctx, id).isNotBlank()
               }
 
+              fun isTested(ctx: Context): Boolean =
+                  prefs(ctx).getBoolean("ai_tested", false)
+
+              fun setTested(ctx: Context, ok: Boolean) {
+                  prefs(ctx).edit().putBoolean("ai_tested", ok).apply()
+              }
+
               fun save(ctx: Context, id: String, key: String, model: String) {
-                  ctx.getSharedPreferences("atlas", Context.MODE_PRIVATE).edit()
+                  prefs(ctx).edit()
                       .putString("key_$id", key)
                       .putString("model_$id", model)
                       .putString("ai_active", id)
+                      .putBoolean("ai_tested", false)
                       .apply()
               }
 
               fun getKey(ctx: Context, id: String): String =
-                  ctx.getSharedPreferences("atlas", Context.MODE_PRIVATE).getString("key_$id", "") ?: ""
+                  prefs(ctx).getString("key_$id", "") ?: ""
 
               fun getModel(ctx: Context, id: String): String {
                   val d = providers.firstOrNull { it.id == id }?.defaultModel ?: ""
-                  return ctx.getSharedPreferences("atlas", Context.MODE_PRIVATE).getString("model_$id", d) ?: d
+                  return prefs(ctx).getString("model_$id", d) ?: d
               }
 
               suspend fun ask(ctx: Context, prompt: String): AiAnswer = withContext(Dispatchers.IO) {
@@ -437,8 +448,61 @@ jobs:
                   } catch (e: UnknownHostException) {
                       AiAnswer(false, "Sem internet ou servidor inacessivel.")
                   } catch (e: Exception) {
-                      AiAnswer(false, e.message ?: "Erro desconhecido.")
+                      val msg = e.message ?: "Erro desconhecido."
+                      if (msg.contains("404") && !p.isGemini) {
+                          autoRepair(ctx, p, key, prompt)
+                      } else {
+                          AiAnswer(false, msg)
+                      }
                   }
+              }
+
+              /** AUTO-REPARO: modelo antigo morreu (404) — descobre os modelos atuais e usa um que funcione. */
+              private fun autoRepair(ctx: Context, p: P, key: String, prompt: String): AiAnswer {
+                  val models = listModels(p, key)
+                  val chosen = pickChatModel(models)
+                      ?: return AiAnswer(false, "O modelo antigo saiu do ar e nao encontrei substituto na sua conta. Gere uma chave nova no site da IA.")
+                  return try {
+                      val resp = askOpenAi(p, key, chosen, prompt)
+                      if (resp.isBlank()) {
+                          AiAnswer(false, "Troquei para o modelo $chosen mas ele respondeu vazio.")
+                      } else {
+                          prefs(ctx).edit().putString("model_${p.id}", chosen).apply()
+                          AiAnswer(true, resp)
+                      }
+                  } catch (e: Exception) {
+                      AiAnswer(false, "Falhei mesmo trocando para o modelo $chosen: ${e.message}")
+                  }
+              }
+
+              private fun listModels(p: P, key: String): List<String> {
+                  return try {
+                      val modelsUrl = p.url.substringBefore("/chat/completions") + "/models"
+                      val c = URL(modelsUrl).openConnection() as HttpURLConnection
+                      c.requestMethod = "GET"
+                      c.connectTimeout = 15000
+                      c.readTimeout = 20000
+                      c.setRequestProperty("Authorization", "Bearer $key")
+                      if (c.responseCode in 200..299) {
+                          val json = JSONObject(c.inputStream.bufferedReader().use { it.readText() })
+                          val arr = json.optJSONArray("data") ?: return emptyList()
+                          (0 until arr.length()).mapNotNull { i ->
+                              arr.optJSONObject(i)?.optString("id")
+                          }.filter { it.isNotBlank() }
+                      } else emptyList()
+                  } catch (_: Exception) {
+                      emptyList()
+                  }
+              }
+
+              private fun pickChatModel(models: List<String>): String? {
+                  val bad = listOf("whisper", "tts", "playai", "guard", "distil", "embed", "moderation", "prompt")
+                  val chat = models.filter { m -> bad.none { m.lowercase().contains(it) } }
+                  return chat.firstOrNull { it.lowercase().contains("llama-3.3") }
+                      ?: chat.firstOrNull { it.lowercase().contains("llama") }
+                      ?: chat.firstOrNull { it.lowercase().contains("gpt-oss") }
+                      ?: chat.firstOrNull { it.lowercase().contains("qwen") }
+                      ?: chat.firstOrNull()
               }
 
               private fun askOpenAi(p: P, key: String, model: String, prompt: String): String {
@@ -1245,7 +1309,7 @@ jobs:
               var showAi by remember { mutableStateOf(false) }
               var showVoz by remember { mutableStateOf(false) }
               var aiActive by remember { mutableStateOf(AiTool.activeId(ctx)) }
-              var aiOk by remember { mutableStateOf(AiTool.isConfigured(ctx)) }
+              var aiOk by remember { mutableStateOf(AiTool.isConfigured(ctx) && AiTool.isTested(ctx)) }
               var vozOk by remember { mutableStateOf(VoiceOutput.azureKey(ctx).isNotBlank()) }
               var batt by remember { mutableStateOf(0.6f) }
               var temp by remember { mutableStateOf(30f) }
@@ -1321,7 +1385,7 @@ jobs:
                                       if (paused) "[MODO] DESCANSO" else "[MODO] ESCUTANDO",
                                       2
                                   )
-                                  StatusLine("[REDE] IA: $aiLabel${if (aiOk) " OK" else ""}", 3)
+                                  StatusLine("[REDE] IA: $aiLabel${if (aiOk) " OK" else " PENDENTE"}", 3)
                                   StatusLine("[DADOS] EM TEMPO REAL", 4)
                               }
                           }
@@ -1394,7 +1458,7 @@ jobs:
               if (showAi) {
                   AiDialog(onClose = {
                       showAi = false
-                      aiOk = AiTool.isConfigured(ctx)
+                      aiOk = AiTool.isConfigured(ctx) && AiTool.isTested(ctx)
                       aiActive = AiTool.activeId(ctx)
                   })
               }
@@ -1630,6 +1694,7 @@ jobs:
               var model by remember { mutableStateOf(AiTool.getModel(ctx, selected)) }
               var testing by remember { mutableStateOf(false) }
               var errMsg by remember { mutableStateOf("") }
+              var infoMsg by remember { mutableStateOf("") }
 
               AlertDialog(
                   onDismissRequest = { if (!testing) onClose() },
@@ -1640,9 +1705,17 @@ jobs:
                               AiTool.save(ctx, selected, key.trim(), model.trim())
                               testing = true
                               errMsg = ""
+                              infoMsg = ""
                               scope.launch {
                                   val r = AiTool.ask(ctx, "Diga: teste concluido.")
-                                  if (r.ok) onClose() else { errMsg = r.text; testing = false }
+                                  if (r.ok) {
+                                      AiTool.setTested(ctx, true)
+                                      onClose()
+                                  } else {
+                                      errMsg = r.text
+                                      infoMsg = "Se o motivo for modelo antigo, o ATLAS tentou se auto-reparar. Toque em SALVAR E TESTAR de novo."
+                                      testing = false
+                                  }
                               }
                           }
                       ) { Text(if (testing) "TESTANDO..." else "SALVAR E TESTAR") }
@@ -1683,16 +1756,13 @@ jobs:
                           Spacer(Modifier.height(6.dp))
                           OutlinedTextField(
                               value = model, onValueChange = { model = it },
-                              label = { Text("Modelo (nao mexa)") },
+                              label = { Text("Modelo (se der 404, ele troca sozinho)") },
                               modifier = Modifier.fillMaxWidth()
                           )
                           if (errMsg.isNotEmpty()) {
                               Spacer(Modifier.height(8.dp))
                               Text("ERRO: $errMsg", color = RED, fontSize = 12.sp)
-                              Text(
-                                  "Dica: copie a chave inteira do site, sem espacos no comeco ou no fim.",
-                                  color = Color(0xFF9FB3C8), fontSize = 11.sp
-                              )
+                              Text(infoMsg, color = Color(0xFF9FB3C8), fontSize = 11.sp)
                           }
                       }
                   }
@@ -1863,7 +1933,7 @@ jobs:
           }
           FIM_BOOT
 
-          echo "Projeto 3.3 gerado com sucesso."
+          echo "Projeto 3.4 gerado com sucesso."
 
       - name: Compilar APK
         run: |
@@ -1889,5 +1959,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ github.run_number }}
-          name: ATLAS 3.3 IA Facil - v${{ github.run_number }}
+          name: ATLAS 3.4 IA Auto-Reparo - v${{ github.run_number }}
           files: app/build/outputs/apk/debug/app-debug.apk
