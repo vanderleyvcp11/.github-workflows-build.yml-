@@ -72,8 +72,8 @@ jobs:
                   applicationId = "com.atlas.assistant"
                   minSdk = 26
                   targetSdk = 34
-                  versionCode = 5
-                  versionName = "3.0"
+                  versionCode = 6
+                  versionName = "3.1"
               }
               buildFeatures { compose = true }
               composeOptions { kotlinCompilerExtensionVersion = "1.5.8" }
@@ -532,6 +532,7 @@ jobs:
           import android.content.ContentUris
           import android.content.Context
           import android.content.Intent
+          import android.content.IntentFilter
           import android.content.pm.PackageManager
           import android.hardware.camera2.CameraCharacteristics
           import android.hardware.camera2.CameraManager
@@ -652,7 +653,12 @@ jobs:
               private fun diagnostics(ctx: Context): String {
                   val bm = ctx.getSystemService(Context.BATTERY_SERVICE) as BatteryManager
                   val lvl = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
-                  val temp = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_TEMPERATURE) / 10.0
+                  var temp = 0f
+                  try {
+                      val stick = ctx.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+                      val raw = stick?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0) ?: 0
+                      if (raw > 0) temp = raw / 10f
+                  } catch (_: Exception) {}
                   val am = ctx.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
                   val mi = ActivityManager.MemoryInfo(); am.getMemoryInfo(mi)
                   val mem = ((mi.totalMem - mi.availMem) * 100 / mi.totalMem).toInt()
@@ -1121,6 +1127,10 @@ jobs:
           cat > app/src/main/java/com/atlas/assistant/HudScreen.kt << 'FIM_HUD'
           package com.atlas.assistant
 
+          import android.content.Context
+          import android.content.Intent
+          import android.content.IntentFilter
+          import android.os.BatteryManager
           import androidx.compose.animation.core.FastOutSlowInEasing
           import androidx.compose.animation.core.LinearEasing
           import androidx.compose.animation.core.RepeatMode
@@ -1187,8 +1197,6 @@ jobs:
           import kotlin.math.abs
           import kotlin.math.cos
           import kotlin.math.sin
-          import android.content.Context
-          import android.os.BatteryManager
 
           private val NEON = Color(0xFF4FC3F7)
           private val NEON_DEEP = Color(0xFF0B5E86)
@@ -1233,7 +1241,11 @@ jobs:
                       val bm = ctx.getSystemService(Context.BATTERY_SERVICE) as BatteryManager
                       val lvl = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
                       if (lvl > 0) batt = lvl / 100f
-                      temp = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_TEMPERATURE) / 10f
+                      try {
+                          val stick = ctx.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+                          val tRaw = stick?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0) ?: 0
+                          if (tRaw > 0) temp = tRaw / 10f
+                      } catch (_: Exception) {}
                       clock = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
                       delay(1000)
                   }
@@ -1838,7 +1850,7 @@ jobs:
           }
           FIM_BOOT
 
-          echo "Projeto 3.0 gerado com sucesso."
+          echo "Projeto 3.1 gerado com sucesso."
 
       - name: Compilar APK
         run: |
@@ -1864,5 +1876,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ github.run_number }}
-          name: ATLAS 3.0 HUD Cinema - v${{ github.run_number }}
+          name: ATLAS 3.1 HUD Cinema - v${{ github.run_number }}
           files: app/build/outputs/apk/debug/app-debug.apk
