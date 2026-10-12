@@ -72,8 +72,8 @@ jobs:
                   applicationId = "com.atlas.assistant"
                   minSdk = 26
                   targetSdk = 34
-                  versionCode = 9
-                  versionName = "3.4"
+                  versionCode = 10
+                  versionName = "3.5"
               }
               buildFeatures { compose = true }
               composeOptions { kotlinCompilerExtensionVersion = "1.5.8" }
@@ -457,11 +457,10 @@ jobs:
                   }
               }
 
-              /** AUTO-REPARO: modelo antigo morreu (404) — descobre os modelos atuais e usa um que funcione. */
               private fun autoRepair(ctx: Context, p: P, key: String, prompt: String): AiAnswer {
                   val models = listModels(p, key)
                   val chosen = pickChatModel(models)
-                      ?: return AiAnswer(false, "O modelo antigo saiu do ar e nao encontrei substituto na sua conta. Gere uma chave nova no site da IA.")
+                      ?: return AiAnswer(false, "O modelo antigo saiu do ar e nao encontrei substituto. Gere uma chave nova no site da IA.")
                   return try {
                       val resp = askOpenAi(p, key, chosen, prompt)
                       if (resp.isBlank()) {
@@ -1116,8 +1115,7 @@ jobs:
                       setRecognitionListener(this@AtlasService)
                       val i = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
                           putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                          putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault().toLanguageTag())
-                          putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+                          putExtra(RecognizerIntent.EXTRA_LANGUAGE, "pt-BR")
                           putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
                           putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
                       }
@@ -1207,6 +1205,10 @@ jobs:
           import android.content.Intent
           import android.content.IntentFilter
           import android.os.BatteryManager
+          import android.os.Bundle
+          import android.speech.RecognitionListener
+          import android.speech.RecognizerIntent
+          import android.speech.SpeechRecognizer
           import androidx.compose.animation.core.FastOutSlowInEasing
           import androidx.compose.animation.core.LinearEasing
           import androidx.compose.animation.core.RepeatMode
@@ -1243,6 +1245,7 @@ jobs:
           import androidx.compose.material3.Text
           import androidx.compose.material3.TextButton
           import androidx.compose.runtime.Composable
+          import androidx.compose.runtime.DisposableEffect
           import androidx.compose.runtime.LaunchedEffect
           import androidx.compose.runtime.collectAsState
           import androidx.compose.runtime.getValue
@@ -1314,7 +1317,75 @@ jobs:
               var batt by remember { mutableStateOf(0.6f) }
               var temp by remember { mutableStateOf(30f) }
               var clock by remember { mutableStateOf("--:--:--") }
+              var micListening by remember { mutableStateOf(false) }
+              var micError by remember { mutableStateOf("") }
               val listState = rememberLazyListState()
+              val scope = rememberCoroutineScope()
+
+              val recognizer = remember {
+                  if (SpeechRecognizer.isRecognitionAvailable(ctx)) {
+                      SpeechRecognizer.createSpeechRecognizer(ctx).apply {
+                          setRecognitionListener(object : RecognitionListener {
+                              override fun onResults(results: Bundle?) {
+                                  micListening = false
+                                  val t = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
+                                  if (!t.isNullOrBlank()) {
+                                      micError = ""
+                                      onSend(t)
+                                  } else {
+                                      micError = "Nao entendi. Fale de novo."
+                                  }
+                              }
+                              override fun onError(error: Int) {
+                                  micListening = false
+                                  micError = when (error) {
+                                      SpeechRecognizer.ERROR_NO_MATCH, SpeechRecognizer.ERROR_SPEECH_TIMEOUT ->
+                                          "Nao ouvi nada. Toque e fale mais perto."
+                                      SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS ->
+                                          "Permissao de microfone negada. Conceda nas configuracoes do celular."
+                                      SpeechRecognizer.ERROR_RECOGNIZER_BUSY ->
+                                          "Aguarde um instante e toque de novo."
+                                      else -> "Erro de voz ($error). Tente de novo ou digite."
+                                  }
+                              }
+                              override fun onReadyForSpeech(params: Bundle?) {}
+                              override fun onBeginningOfSpeech() {}
+                              override fun onRmsChanged(rmsdB: Float) {}
+                              override fun onBufferReceived(buffer: ByteArray?) {}
+                              override fun onEndOfSpeech() {}
+                              override fun onPartialResults(partialResults: Bundle?) {}
+                              override fun onEvent(eventType: Int, params: Bundle?) {}
+                          })
+                      }
+                  } else null
+              }
+
+              DisposableEffect(Unit) {
+                  onDispose {
+                      try { recognizer?.destroy() } catch (_: Exception) {}
+                  }
+              }
+
+              fun startMic() {
+                  val r = recognizer
+                  if (r == null) {
+                      micError = "Reconhecimento de voz nao disponivel neste aparelho. Use o teclado."
+                      return
+                  }
+                  val i = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                      putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                      putExtra(RecognizerIntent.EXTRA_LANGUAGE, "pt-BR")
+                      putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
+                  }
+                  micError = ""
+                  micListening = true
+                  try {
+                      r.startListening(i)
+                  } catch (_: Exception) {
+                      micListening = false
+                      micError = "Falha ao abrir o microfone. Tente de novo."
+                  }
+              }
 
               LaunchedEffect(Unit) {
                   while (true) {
@@ -1365,13 +1436,22 @@ jobs:
                   }
                   Spacer(Modifier.height(6.dp))
 
-                  Box(Modifier.fillMaxWidth().height(310.dp), contentAlignment = Alignment.Center) {
+                  Box(Modifier.fillMaxWidth().height(280.dp), contentAlignment = Alignment.Center) {
                       ReactorCore(
-                          Modifier.size(290.dp),
+                          Modifier.size(260.dp),
                           active = !paused
                       )
+                      MicButton(
+                          listening = micListening,
+                          modifier = Modifier.align(Alignment.BottomCenter)
+                      ) { if (!paused) startMic() }
                   }
-                  Spacer(Modifier.height(6.dp))
+                  Spacer(Modifier.height(4.dp))
+                  if (micError.isNotEmpty()) {
+                      Text(micError, color = RED, fontSize = 11.sp, textAlign = TextAlign.Center)
+                      Spacer(Modifier.height(4.dp))
+                  }
+                  Spacer(Modifier.height(4.dp))
 
                   Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                       Box(Modifier.weight(1f)) { PanelBox { SpectrumPanel() } }
@@ -1401,7 +1481,7 @@ jobs:
                           )
                           Spacer(Modifier.height(3.dp))
                           Text(
-                              reply.ifEmpty { "ATLAS ONLINE. TODOS OS SISTEMAS CARREGADOS E PRONTOS PARA USO, SENHOR." },
+                              reply.ifEmpty { "ATLAS ONLINE. TOQUE NO MICROFONE E FALE, SENHOR." },
                               color = GOLD, fontSize = 13.sp
                           )
                       }
@@ -1482,6 +1562,66 @@ jobs:
               Bus.State.LISTENING -> NEON
               Bus.State.PROCESSING -> AMBER
               Bus.State.SPEAKING -> GREEN
+          }
+
+          /** Botao de microfone central: toca, fala, solta. Funciona em 100% dos aparelhos. */
+          @Composable
+          private fun MicButton(listening: Boolean, modifier: Modifier, onClick: () -> Unit) {
+              val t = rememberInfiniteTransition(label = "micb")
+              val pulse by t.animateFloat(
+                  0.92f, 1.08f,
+                  infiniteRepeatable(tween(500, easing = FastOutSlowInEasing), RepeatMode.Reverse),
+                  label = "mp2"
+              )
+              val rot by t.animateFloat(0f, 360f, infiniteRepeatable(tween(8000, easing = LinearEasing)), label = "mr2")
+              val scale = if (listening) pulse else 1f
+              Box(
+                  modifier
+                      .size(74.dp)
+                      .graphicsLayer { scaleX = scale; scaleY = scale }
+                      .border(2.dp, if (listening) RED else NEON, CircleShape)
+                      .background(BG, CircleShape)
+                      .clickable { onClick() },
+                  contentAlignment = Alignment.Center
+              ) {
+                  Canvas(Modifier.size(68.dp).graphicsLayer { rotationZ = rot }) {
+                      val r = size.minDimension / 2f - 2f
+                      val c = center
+                      repeat(16) { i ->
+                          drawArc(
+                              (if (listening) RED else NEON).copy(alpha = 0.5f),
+                              i * 22.5f + 5f, 12f, false,
+                              topLeft = Offset(c.x - r, c.y - r), size = Size(r * 2, r * 2),
+                              style = Stroke(1.5f)
+                          )
+                      }
+                  }
+                  val mw = 13.dp.value
+                  Canvas(Modifier.size(34.dp)) {
+                      val r = size.minDimension / 2f
+                      val c = center
+                      val bw = r * 0.42f
+                      drawRoundRect(
+                          if (listening) RED else NEON,
+                          topLeft = Offset(c.x - bw / 2f, c.y - r * 0.55f),
+                          size = Size(bw, r * 0.75f),
+                          cornerRadius = CornerRadius(bw / 2f, bw / 2f)
+                      )
+                      drawArc(
+                          if (listening) RED else NEON, 0f, 180f, false,
+                          topLeft = Offset(c.x - bw * 0.8f, c.y - r * 0.12f),
+                          size = Size(bw * 1.6f, bw * 1.6f), style = Stroke(3f)
+                      )
+                      drawLine(
+                          if (listening) RED else NEON,
+                          Offset(c.x, c.y + r * 0.35f), Offset(c.x, c.y + r * 0.62f), strokeWidth = 3f
+                      )
+                      drawLine(
+                          if (listening) RED else NEON,
+                          Offset(c.x - r * 0.30f, c.y + r * 0.62f), Offset(c.x + r * 0.30f, c.y + r * 0.62f), strokeWidth = 3f
+                      )
+                  }
+              }
           }
 
           @Composable
@@ -1933,7 +2073,7 @@ jobs:
           }
           FIM_BOOT
 
-          echo "Projeto 3.4 gerado com sucesso."
+          echo "Projeto 3.5 gerado com sucesso."
 
       - name: Compilar APK
         run: |
@@ -1959,5 +2099,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ github.run_number }}
-          name: ATLAS 3.4 IA Auto-Reparo - v${{ github.run_number }}
+          name: ATLAS 3.5 Voz Garantida - v${{ github.run_number }}
           files: app/build/outputs/apk/debug/app-debug.apk
