@@ -35,7 +35,6 @@ jobs:
           mkdir -p app/src/main/res/drawable
           mkdir -p app/src/main/res/mipmap-anydpi-v26
 
-          # ================= settings.gradle.kts =================
           cat > settings.gradle.kts << 'FIM_SETTINGS'
           pluginManagement {
               repositories { google(); mavenCentral(); gradlePluginPortal() }
@@ -47,7 +46,6 @@ jobs:
           include(":app")
           FIM_SETTINGS
 
-          # ================= build.gradle.kts =================
           cat > build.gradle.kts << 'FIM_ROOT'
           plugins {
               id("com.android.application") version "8.2.2" apply false
@@ -55,7 +53,6 @@ jobs:
           }
           FIM_ROOT
 
-          # ================= gradle.properties =================
           cat > gradle.properties << 'FIM_PROPS'
           org.gradle.jvmargs=-Xmx2048m
           android.useAndroidX=true
@@ -63,7 +60,6 @@ jobs:
           android.nonTransitiveRClass=true
           FIM_PROPS
 
-          # ================= app/build.gradle.kts =================
           cat > app/build.gradle.kts << 'FIM_APP'
           plugins {
               id("com.android.application")
@@ -99,7 +95,6 @@ jobs:
           }
           FIM_APP
 
-          # ================= AndroidManifest.xml =================
           cat > app/src/main/AndroidManifest.xml << 'FIM_MANIFEST'
           <?xml version="1.0" encoding="utf-8"?>
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
@@ -135,14 +130,12 @@ jobs:
           </manifest>
           FIM_MANIFEST
 
-          # ================= strings =================
           cat > app/src/main/res/values/strings.xml << 'FIM_STRINGS'
           <resources>
               <string name="app_name">ATLAS</string>
           </resources>
           FIM_STRINGS
 
-          # ================= colors =================
           cat > app/src/main/res/values/colors.xml << 'FIM_COLORS'
           <resources>
               <color name="black">#000000</color>
@@ -150,7 +143,6 @@ jobs:
           </resources>
           FIM_COLORS
 
-          # ================= themes =================
           cat > app/src/main/res/values/themes.xml << 'FIM_THEMES'
           <resources>
               <style name="Theme.ATLAS" parent="android:Theme.Material.NoActionBar">
@@ -161,7 +153,6 @@ jobs:
           </resources>
           FIM_THEMES
 
-          # ================= icone reator =================
           cat > app/src/main/res/drawable/ic_reactor.xml << 'FIM_ICON'
           <vector xmlns:android="http://schemas.android.com/apk/res/android"
               android:width="108dp" android:height="108dp"
@@ -174,7 +165,6 @@ jobs:
           </vector>
           FIM_ICON
 
-          # ================= launcher adaptativo =================
           cat > app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml << 'FIM_LAUNCHER'
           <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
               <background android:drawable="@color/ic_bg"/>
@@ -182,7 +172,6 @@ jobs:
           </adaptive-icon>
           FIM_LAUNCHER
 
-          # ================= VoiceOutput.kt =================
           cat > app/src/main/java/com/atlas/assistant/VoiceOutput.kt << 'FIM_VOICE'
           package com.atlas.assistant
 
@@ -231,7 +220,6 @@ jobs:
                       override fun onDone(utteranceId: String?) {
                           main.post { Bus.state.value = Bus.State.IDLE; onDone() }
                       }
-                      @Deprecated("Deprecated in Java")
                       override fun onError(utteranceId: String?) {
                           main.post { Bus.state.value = Bus.State.IDLE; onDone() }
                       }
@@ -241,7 +229,6 @@ jobs:
           }
           FIM_VOICE
 
-          # ================= WeatherTool.kt =================
           cat > app/src/main/java/com/atlas/assistant/WeatherTool.kt << 'FIM_WEATHER'
           package com.atlas.assistant
 
@@ -295,13 +282,13 @@ jobs:
           }
           FIM_WEATHER
 
-          # ================= AtlasBrain.kt =================
           cat > app/src/main/java/com/atlas/assistant/AtlasBrain.kt << 'FIM_BRAIN'
           package com.atlas.assistant
 
           import android.app.ActivityManager
           import android.content.Context
           import android.content.Intent
+          import android.content.pm.PackageManager
           import android.hardware.camera2.CameraCharacteristics
           import android.hardware.camera2.CameraManager
           import android.media.AudioAttributes
@@ -445,7 +432,7 @@ jobs:
                       .trim().trimEnd('.', '!', '?'))
                   if (name.isEmpty()) return "Para quem devo ligar, senhor?"
                   if (ContextCompat.checkSelfPermission(ctx, android.Manifest.permission.READ_CONTACTS)
-                      != android.content.pm.PackageManager.PERMISSION_GRANTED)
+                      != PackageManager.PERMISSION_GRANTED)
                       return "Preciso da permissão de contatos, senhor. Conceda-a no aplicativo."
                   ctx.contentResolver.query(
                       ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
@@ -457,7 +444,7 @@ jobs:
                           if (dn.contains(name)) {
                               val num = c.getString(0)
                               val intent = if (ContextCompat.checkSelfPermission(ctx, android.Manifest.permission.CALL_PHONE)
-                                  == android.content.pm.PackageManager.PERMISSION_GRANTED)
+                                  == PackageManager.PERMISSION_GRANTED)
                                   Intent(Intent.ACTION_CALL, Uri.parse("tel:$num"))
                               else Intent(Intent.ACTION_DIAL, Uri.parse("tel:$num"))
                               ctx.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
@@ -656,7 +643,6 @@ jobs:
           }
           FIM_BRAIN
 
-          # ================= AtlasService.kt =================
           cat > app/src/main/java/com/atlas/assistant/AtlasService.kt << 'FIM_SERVICE'
           package com.atlas.assistant
 
@@ -852,7 +838,6 @@ jobs:
           }
           FIM_SERVICE
 
-          # ================= HudScreen.kt =================
           cat > app/src/main/java/com/atlas/assistant/HudScreen.kt << 'FIM_HUD'
           package com.atlas.assistant
 
@@ -927,7 +912,7 @@ jobs:
                   Spacer(Modifier.height(4.dp))
                   Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { Reactor(state) }
                   Spacer(Modifier.height(4.dp))
-                  Text(heard.ifEmpty { "Aguardando wake word…" },
+                  Text(heard.ifEmpty { "Aguardando wake word..." },
                       color = CYAN.copy(alpha = 0.8f), fontSize = 15.sp, textAlign = TextAlign.Center)
                   Text(reply, color = GOLD, fontSize = 16.sp, textAlign = TextAlign.Center)
                   Spacer(Modifier.height(12.dp))
@@ -935,7 +920,7 @@ jobs:
                   LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = listState) {
                       items(log.size) { i ->
                           val (u, a) = log[i]
-                          Text("❯ $u", color = CYAN, fontSize = 14.sp)
+                          Text("COMANDO: $u", color = CYAN, fontSize = 14.sp)
                           Text(a, color = GOLD, fontSize = 14.sp)
                           Spacer(Modifier.height(8.dp))
                       }
@@ -945,7 +930,7 @@ jobs:
                       OutlinedTextField(
                           value = input, onValueChange = { input = it },
                           modifier = Modifier.weight(1f),
-                          placeholder = { Text("Ou digite um comando…", color = Color(0xFF3B4C5C)) }
+                          placeholder = { Text("Ou digite um comando...", color = Color(0xFF3B4C5C)) }
                       )
                       Spacer(Modifier.width(8.dp))
                       Button(onClick = {
@@ -956,10 +941,10 @@ jobs:
           }
 
           private fun statusText(s: Bus.State) = when (s) {
-              Bus.State.IDLE -> "DIGA  \"JARVIS\""
-              Bus.State.LISTENING -> "OUVINDO…"
-              Bus.State.PROCESSING -> "PROCESSANDO…"
-              Bus.State.SPEAKING -> "RESPONDENDO…"
+              Bus.State.IDLE -> "DIGA: JARVIS"
+              Bus.State.LISTENING -> "OUVINDO..."
+              Bus.State.PROCESSING -> "PROCESSANDO..."
+              Bus.State.SPEAKING -> "RESPONDENDO..."
           }
 
           private fun statusColor(s: Bus.State) = when (s) {
@@ -1034,12 +1019,11 @@ jobs:
                   Text("Conceda acesso ao microfone para ativar o despertar por voz.",
                       color = Color.White, textAlign = TextAlign.Center)
                   Spacer(Modifier.height(24.dp))
-                  Button(onClick = onRequest) { Text("CONCEDER PERMISSÕES") }
+                  Button(onClick = onRequest) { Text("CONCEDER PERMISSOES") }
               }
           }
           FIM_HUD
 
-          # ================= MainActivity.kt =================
           cat > app/src/main/java/com/atlas/assistant/MainActivity.kt << 'FIM_MAIN'
           package com.atlas.assistant
 
@@ -1109,7 +1093,6 @@ jobs:
           }
           FIM_MAIN
 
-          # ================= BootReceiver.kt =================
           cat > app/src/main/java/com/atlas/assistant/BootReceiver.kt << 'FIM_BOOT'
           package com.atlas.assistant
 
@@ -1134,12 +1117,31 @@ jobs:
           }
           FIM_BOOT
 
-          echo "ARQUIVOS GERADOS:"
-          wc -l app/src/main/java/com/atlas/assistant/*.kt
           echo "Projeto gerado com sucesso."
+          {
+            echo "### Arquivos gerados:"
+            echo ""
+            wc -l app/src/main/java/com/atlas/assistant/*.kt
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Compilar APK
-        run: gradle assembleDebug --no-daemon
+        run: |
+          set -o pipefail
+          gradle assembleDebug --no-daemon 2>&1 | tee /tmp/build.log
+
+      - name: Diagnostico no resumo (aparece se falhar)
+        if: failure()
+        run: |
+          {
+            echo "### Diagnostico da falha (raio-X):"
+            echo ""
+            grep -nE "^e: |error: |FAILURE:|What went wrong|Caused by:" /tmp/build.log | head -40
+            echo ""
+            echo "Fim do log:"
+            echo ""
+            tail -30 /tmp/build.log
+          } >> "$GITHUB_STEP_SUMMARY" || true
 
       - name: Publicar artefato (download via login)
         uses: actions/upload-artifact@v4
