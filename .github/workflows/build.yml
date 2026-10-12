@@ -601,48 +601,57 @@ jobs:
           }
 
           object Calculator {
+              private var s = ""
+              private var pos = 0
+
               fun eval(expr: String): Double {
-                  val s = expr.replace(" ", "")
-                  var pos = 0
-                  fun peek(): Char? = if (pos < s.length) s[pos] else null
-                  fun parseAtom(): Double {
-                      if (peek() == '(') {
-                          pos++
-                          val v = parseExpr()
-                          if (peek() == ')') pos++
-                          return v
-                      }
-                      val start = pos
-                      while (pos < s.length && (s[pos].isDigit() || s[pos] == '.')) pos++
-                      if (start == pos) throw IllegalArgumentException()
-                      return s.substring(start, pos).toDouble()
-                  }
-                  fun parseUnary(): Double = when (peek()) {
-                      '-' -> { pos++; -parseUnary() }
-                      '+' -> { pos++; parseUnary() }
-                      else -> parseAtom()
-                  }
-                  fun parsePow(): Double {
-                      val base = parseUnary()
-                      return if (peek() == '^') { pos++; Math.pow(base, parsePow()) } else base
-                  }
-                  fun parseTerm(): Double {
-                      var v = parsePow()
-                      while (true) when (peek()) {
-                          '*' -> { pos++; v *= parsePow() }
-                          '/' -> { pos++; v /= parsePow() }
-                          else -> return v
-                      }
-                  }
-                  fun parseExpr(): Double {
-                      var v = parseTerm()
-                      while (true) when (peek()) {
-                          '+' -> { pos++; v += parseTerm() }
-                          '-' -> { pos++; v -= parseTerm() }
-                          else -> return v
-                      }
-                  }
+                  s = expr.replace(" ", "")
+                  pos = 0
                   return parseExpr()
+              }
+
+              private fun peek(): Char? = if (pos < s.length) s[pos] else null
+
+              private fun parseAtom(): Double {
+                  if (peek() == '(') {
+                      pos++
+                      val v = parseExpr()
+                      if (peek() == ')') pos++
+                      return v
+                  }
+                  val start = pos
+                  while (pos < s.length && (s[pos].isDigit() || s[pos] == '.')) pos++
+                  if (start == pos) throw IllegalArgumentException()
+                  return s.substring(start, pos).toDouble()
+              }
+
+              private fun parseUnary(): Double = when (peek()) {
+                  '-' -> { pos++; -parseUnary() }
+                  '+' -> { pos++; parseUnary() }
+                  else -> parseAtom()
+              }
+
+              private fun parsePow(): Double {
+                  val base = parseUnary()
+                  return if (peek() == '^') { pos++; Math.pow(base, parsePow()) } else base
+              }
+
+              private fun parseTerm(): Double {
+                  var v = parsePow()
+                  while (true) when (peek()) {
+                      '*' -> { pos++; v *= parsePow() }
+                      '/' -> { pos++; v /= parsePow() }
+                      else -> return v
+                  }
+              }
+
+              private fun parseExpr(): Double {
+                  var v = parseTerm()
+                  while (true) when (peek()) {
+                      '+' -> { pos++; v += parseTerm() }
+                      '-' -> { pos++; v -= parseTerm() }
+                      else -> return v
+                  }
               }
           }
           FIM_BRAIN
@@ -1125,6 +1134,8 @@ jobs:
           }
           FIM_BOOT
 
+          echo "ARQUIVOS GERADOS:"
+          wc -l app/src/main/java/com/atlas/assistant/*.kt
           echo "Projeto gerado com sucesso."
 
       - name: Compilar APK
