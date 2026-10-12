@@ -286,6 +286,7 @@ jobs:
           package com.atlas.assistant
 
           import android.app.ActivityManager
+          import android.content.ContentUris
           import android.content.Context
           import android.content.Intent
           import android.content.pm.PackageManager
@@ -297,7 +298,6 @@ jobs:
           import android.net.Uri
           import android.os.BatteryManager
           import android.os.Build
-          import android.os.ContentUris
           import android.provider.AlarmClock
           import android.provider.ContactsContract
           import android.provider.MediaStore
@@ -507,7 +507,7 @@ jobs:
                   ctx.startActivity(Intent(AlarmClock.ACTION_SET_TIMER).apply {
                       putExtra(AlarmClock.EXTRA_LENGTH, secs.toInt())
                       putExtra(AlarmClock.EXTRA_SKIP_UI, true)
-                      putExtra(AlarmClock.EXTRA_DESCRIPTION, "ATLAS")
+                      putExtra(AlarmClock.EXTRA_MESSAGE, "ATLAS")
                       addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                   })
                   val pretty = if (secs >= 3600) "${secs / 3600}h${(secs % 3600) / 60}min" else "${secs / 60}min"
@@ -1118,12 +1118,6 @@ jobs:
           FIM_BOOT
 
           echo "Projeto gerado com sucesso."
-          {
-            echo "### Arquivos gerados:"
-            echo ""
-            wc -l app/src/main/java/com/atlas/assistant/*.kt
-            echo ""
-          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Compilar APK
         run: |
@@ -1136,11 +1130,7 @@ jobs:
           {
             echo "### Diagnostico da falha (raio-X):"
             echo ""
-            grep -nE "^e: |error: |FAILURE:|What went wrong|Caused by:" /tmp/build.log | head -40
-            echo ""
-            echo "Fim do log:"
-            echo ""
-            tail -30 /tmp/build.log
+            grep -nE "^e: |error: |FAILURE:|What went wrong" /tmp/build.log | head -40
           } >> "$GITHUB_STEP_SUMMARY" || true
 
       - name: Publicar artefato (download via login)
