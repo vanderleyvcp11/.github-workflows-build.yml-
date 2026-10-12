@@ -72,8 +72,8 @@ jobs:
                   applicationId = "com.atlas.assistant"
                   minSdk = 26
                   targetSdk = 34
-                  versionCode = 7
-                  versionName = "3.2"
+                  versionCode = 8
+                  versionName = "3.3"
               }
               buildFeatures { compose = true }
               composeOptions { kotlinCompilerExtensionVersion = "1.5.8" }
@@ -375,6 +375,7 @@ jobs:
           import org.json.JSONObject
           import java.net.HttpURLConnection
           import java.net.URL
+          import java.net.UnknownHostException
 
           object AiTool {
 
@@ -385,6 +386,8 @@ jobs:
                   val defaultModel: String,
                   val isGemini: Boolean
               )
+
+              data class AiAnswer(val ok: Boolean, val text: String)
 
               val providers = listOf(
                   P("groq", "GROQ", "https://api.groq.com/openai/v1/chat/completions", "llama-3.3-70b-versatile", false),
@@ -397,6 +400,11 @@ jobs:
 
               fun activeId(ctx: Context): String? =
                   ctx.getSharedPreferences("atlas", Context.MODE_PRIVATE).getString("ai_active", null)
+
+              fun isConfigured(ctx: Context): Boolean {
+                  val id = activeId(ctx) ?: return false
+                  return getKey(ctx, id).isNotBlank()
+              }
 
               fun save(ctx: Context, id: String, key: String, model: String) {
                   ctx.getSharedPreferences("atlas", Context.MODE_PRIVATE).edit()
@@ -414,16 +422,22 @@ jobs:
                   return ctx.getSharedPreferences("atlas", Context.MODE_PRIVATE).getString("model_$id", d) ?: d
               }
 
-              suspend fun ask(ctx: Context, prompt: String): String? = withContext(Dispatchers.IO) {
-                  val id = activeId(ctx) ?: return@withContext null
-                  val p = providers.firstOrNull { it.id == id } ?: return@withContext null
+              suspend fun ask(ctx: Context, prompt: String): AiAnswer = withContext(Dispatchers.IO) {
+                  val id = activeId(ctx)
+                      ?: return@withContext AiAnswer(false, "Nenhuma IA selecionada. Toque no botao IA, escolha GROQ e cole a chave.")
+                  val p = providers.firstOrNull { it.id == id }
+                      ?: return@withContext AiAnswer(false, "IA desconhecida.")
                   val key = getKey(ctx, id)
-                  if (key.isBlank()) return@withContext null
+                  if (key.isBlank()) return@withContext AiAnswer(false, "A chave esta vazia. Toque no botao IA e cole a chave gsk_...")
                   val model = getModel(ctx, id)
                   try {
-                      if (p.isGemini) askGemini(p, key, model, prompt) else askOpenAi(p, key, model, prompt)
+                      val resp = if (p.isGemini) askGemini(p, key, model, prompt) else askOpenAi(p, key, model, prompt)
+                      if (resp.isBlank()) AiAnswer(false, "A IA respondeu vazio. Tente de novo.")
+                      else AiAnswer(true, resp)
+                  } catch (e: UnknownHostException) {
+                      AiAnswer(false, "Sem internet ou servidor inacessivel.")
                   } catch (e: Exception) {
-                      null
+                      AiAnswer(false, e.message ?: "Erro desconhecido.")
                   }
               }
 
@@ -464,10 +478,10 @@ jobs:
                   if (auth != null) c.setRequestProperty(auth.first, auth.second)
                   c.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
                   val code = c.responseCode
-                  val stream = if (code in 200..299) c.inputStream else c.errorStream
-                  val text = stream?.bufferedReader()?.use { it.readText() } ?: ""
-                  if (code !in 200..299) throw RuntimeException("HTTP $code: $text")
-                  return text
+                  if (code == 401) throw RuntimeException("Chave invalida ou expirada (401). Crie uma nova na pagina da IA.")
+                  if (code == 429) throw RuntimeException("Limite de uso atingido (429). Aguarde alguns minutos.")
+                  if (code !in 200..299) throw RuntimeException("Erro HTTP $code")
+                  return c.inputStream.bufferedReader().use { it.readText() }
               }
           }
           FIM_AIT
@@ -602,10 +616,8 @@ jobs:
 
               private suspend fun smartFallback(ctx: Context, raw: String): String {
                   val ai = AiTool.ask(ctx, raw)
-                  if (!ai.isNullOrBlank()) return ai
-                  return "Comando não reconhecido, senhor. Configure uma IA no botão IA da tela para conversar livremente, " +
-                         "ou experimente: acender lanterna, que horas são, clima em Lisboa, tocar música, " +
-                         "ligar para alguém, calcular 12 vezes 8, ou protocolo casa de festas."
+                  if (ai.ok) return ai.text
+                  return "A IA não respondeu, senhor. Motivo: ${ai.text}. Os comandos locais continuam funcionando."
               }
 
               private fun flashlight(ctx: Context, q: String): String {
@@ -1172,6 +1184,7 @@ jobs:
           import androidx.compose.runtime.getValue
           import androidx.compose.runtime.mutableStateOf
           import androidx.compose.runtime.remember
+          import androidx.compose.runtime.rememberCoroutineScope
           import androidx.compose.runtime.setValue
           import androidx.compose.ui.Alignment
           import androidx.compose.ui.Modifier
@@ -1190,6 +1203,7 @@ jobs:
           import androidx.compose.ui.text.style.TextAlign
           import androidx.compose.ui.unit.dp
           import androidx.compose.ui.unit.sp
+          import kotlinx.coroutines.launch
           import kotlinx.coroutines.delay
           import java.text.SimpleDateFormat
           import java.util.Date
@@ -1231,6 +1245,8 @@ jobs:
               var showAi by remember { mutableStateOf(false) }
               var showVoz by remember { mutableStateOf(false) }
               var aiActive by remember { mutableStateOf(AiTool.activeId(ctx)) }
+              var aiOk by remember { mutableStateOf(AiTool.isConfigured(ctx)) }
+              var vozOk by remember { mutableStateOf(VoiceOutput.azureKey(ctx).isNotBlank()) }
               var batt by remember { mutableStateOf(0.6f) }
               var temp by remember { mutableStateOf(30f) }
               var clock by remember { mutableStateOf("--:--:--") }
@@ -1305,7 +1321,7 @@ jobs:
                                       if (paused) "[MODO] DESCANSO" else "[MODO] ESCUTANDO",
                                       2
                                   )
-                                  StatusLine("[REDE] IA: $aiLabel", 3)
+                                  StatusLine("[REDE] IA: $aiLabel${if (aiOk) " OK" else ""}", 3)
                                   StatusLine("[DADOS] EM TEMPO REAL", 4)
                               }
                           }
@@ -1314,14 +1330,17 @@ jobs:
                   Spacer(Modifier.height(6.dp))
 
                   PanelBox {
-                      Text(
-                          heard.ifEmpty { "Aguardando comando..." },
-                          color = NEON.copy(alpha = 0.85f), fontSize = 12.sp
-                      )
-                      Text(
-                          reply.ifEmpty { "ATLAS ONLINE. TODOS OS SISTEMAS CARREGADOS E PRONTOS PARA USO, SENHOR." },
-                          color = GOLD, fontSize = 13.sp
-                      )
+                      Column {
+                          Text(
+                              heard.ifEmpty { "Aguardando comando..." },
+                              color = NEON.copy(alpha = 0.85f), fontSize = 12.sp
+                          )
+                          Spacer(Modifier.height(3.dp))
+                          Text(
+                              reply.ifEmpty { "ATLAS ONLINE. TODOS OS SISTEMAS CARREGADOS E PRONTOS PARA USO, SENHOR." },
+                              color = GOLD, fontSize = 13.sp
+                          )
+                      }
                   }
                   Spacer(Modifier.height(6.dp))
 
@@ -1359,10 +1378,10 @@ jobs:
                           }
                       }
                       Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
-                          RoundButton("IA") { showAi = true }
+                          RoundButton("IA", highlight = aiOk) { showAi = true }
                       }
                       Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
-                          RoundButton("VOZ") { showVoz = true }
+                          RoundButton("VOZ", highlight = vozOk) { showVoz = true }
                       }
                       Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
                           RoundButton("TESTE") {
@@ -1375,11 +1394,15 @@ jobs:
               if (showAi) {
                   AiDialog(onClose = {
                       showAi = false
+                      aiOk = AiTool.isConfigured(ctx)
                       aiActive = AiTool.activeId(ctx)
                   })
               }
               if (showVoz) {
-                  VozDialog(onClose = { showVoz = false })
+                  VozDialog(onClose = {
+                      showVoz = false
+                      vozOk = VoiceOutput.azureKey(ctx).isNotBlank()
+                  })
               }
           }
 
@@ -1566,14 +1589,14 @@ jobs:
           }
 
           @Composable
-          private fun RoundButton(label: String, onClick: () -> Unit) {
+          private fun RoundButton(label: String, highlight: Boolean = false, onClick: () -> Unit) {
               val t = rememberInfiniteTransition(label = "rb$label")
               val rot by t.animateFloat(0f, 360f, infiniteRepeatable(tween(10000, easing = LinearEasing)), label = "rbr")
               val glow by t.animateFloat(0.6f, 1f, infiniteRepeatable(tween(1500, easing = FastOutSlowInEasing), RepeatMode.Reverse), label = "rbg")
               Box(
                   Modifier
                       .size(62.dp)
-                      .border(1.5.dp, NEON.copy(alpha = 0.5f * glow), CircleShape)
+                      .border(1.5.dp, if (highlight) RED else NEON.copy(alpha = 0.5f * glow), CircleShape)
                       .background(PANEL, CircleShape)
                       .clickable { onClick() },
                   contentAlignment = Alignment.Center
@@ -1583,37 +1606,56 @@ jobs:
                       val c = center
                       repeat(12) { i ->
                           drawArc(
-                              NEON.copy(alpha = 0.55f), i * 30f + 5f, 14f, false,
+                              if (highlight) RED.copy(alpha = 0.65f) else NEON.copy(alpha = 0.55f),
+                              i * 30f + 5f, 14f, false,
                               topLeft = Offset(c.x - r, c.y - r), size = Size(r * 2, r * 2),
                               style = Stroke(1.6f)
                           )
                       }
                   }
-                  Text(label, color = NEON, fontSize = 9.sp, letterSpacing = 0.5.sp, textAlign = TextAlign.Center)
+                  Text(
+                      label,
+                      color = if (highlight) RED else NEON,
+                      fontSize = 9.sp, letterSpacing = 0.5.sp, textAlign = TextAlign.Center
+                  )
               }
           }
 
           @Composable
           private fun AiDialog(onClose: () -> Unit) {
               val ctx = LocalContext.current
+              val scope = rememberCoroutineScope()
               var selected by remember { mutableStateOf(AiTool.activeId(ctx) ?: "groq") }
               var key by remember { mutableStateOf(AiTool.getKey(ctx, selected)) }
               var model by remember { mutableStateOf(AiTool.getModel(ctx, selected)) }
+              var testing by remember { mutableStateOf(false) }
+              var errMsg by remember { mutableStateOf("") }
 
               AlertDialog(
-                  onDismissRequest = onClose,
+                  onDismissRequest = { if (!testing) onClose() },
                   confirmButton = {
-                      TextButton(onClick = {
-                          AiTool.save(ctx, selected, key.trim(), model.trim())
-                          onClose()
-                      }) { Text("SALVAR") }
+                      TextButton(
+                          enabled = !testing,
+                          onClick = {
+                              AiTool.save(ctx, selected, key.trim(), model.trim())
+                              testing = true
+                              errMsg = ""
+                              scope.launch {
+                                  val r = AiTool.ask(ctx, "Diga: teste concluido.")
+                                  if (r.ok) onClose() else { errMsg = r.text; testing = false }
+                              }
+                          }
+                      ) { Text(if (testing) "TESTANDO..." else "SALVAR E TESTAR") }
                   },
-                  dismissButton = { TextButton(onClick = onClose) { Text("FECHAR") } },
-                  title = { Text("INTELIGENCIAS", color = NEON, fontSize = 18.sp) },
+                  dismissButton = {
+                      TextButton(enabled = !testing, onClick = onClose) { Text("FECHAR") }
+                  },
+                  title = { Text("IA DO ATLAS", color = NEON, fontSize = 18.sp) },
                   text = {
                       Column {
                           Text(
-                              "Escolha a IA e cole sua chave. Groq e gratuita em console.groq.com. OpenRouter tem modelos gratis.",
+                              "1. Toque GROQ.  2. Cole a chave (comeca com gsk_).  " +
+                              "3. SALVAR E TESTAR. Se passar, o botao IA fica VERMELHO.",
                               color = Color(0xFF9FB3C8), fontSize = 12.sp
                           )
                           Spacer(Modifier.height(10.dp))
@@ -1635,15 +1677,23 @@ jobs:
                           Spacer(Modifier.height(10.dp))
                           OutlinedTextField(
                               value = key, onValueChange = { key = it },
-                              label = { Text("Chave de API") },
+                              label = { Text("Chave de API (gsk_...)") },
                               modifier = Modifier.fillMaxWidth()
                           )
                           Spacer(Modifier.height(6.dp))
                           OutlinedTextField(
                               value = model, onValueChange = { model = it },
-                              label = { Text("Modelo") },
+                              label = { Text("Modelo (nao mexa)") },
                               modifier = Modifier.fillMaxWidth()
                           )
+                          if (errMsg.isNotEmpty()) {
+                              Spacer(Modifier.height(8.dp))
+                              Text("ERRO: $errMsg", color = RED, fontSize = 12.sp)
+                              Text(
+                                  "Dica: copie a chave inteira do site, sem espacos no comeco ou no fim.",
+                                  color = Color(0xFF9FB3C8), fontSize = 11.sp
+                              )
+                          }
                       }
                   }
               )
@@ -1662,16 +1712,17 @@ jobs:
                       TextButton(onClick = {
                           VoiceOutput.saveAzure(ctx, key, region, voice)
                           onClose()
-                      }) { Text("SALVAR") }
+                          VoiceOutput.speak("Voz neural ativada com sucesso. Estou a suas ordens, senhor.") {}
+                      }) { Text("SALVAR E TESTAR") }
                   },
                   dismissButton = { TextButton(onClick = onClose) { Text("FECHAR") } },
                   title = { Text("VOZ DO ATLAS", color = NEON, fontSize = 18.sp) },
                   text = {
                       Column {
                           Text(
-                              "Sem chave: usa a voz do aparelho (pt-BR). " +
-                              "Com chave Azure gratuita (speech.microsoft.com, plano F0): voz neural de cinema. " +
-                              "Escolha a voz:",
+                              "Sem chave: usa a voz do aparelho. Com chave Azure gratuita " +
+                              "(speech.microsoft.com, plano F0): voz de cinema. " +
+                              "Ao salvar, ele fala um teste. Botao VOZ fica VERMELHO quando ativa.",
                               color = Color(0xFF9FB3C8), fontSize = 12.sp
                           )
                           Spacer(Modifier.height(10.dp))
@@ -1812,7 +1863,7 @@ jobs:
           }
           FIM_BOOT
 
-          echo "Projeto 3.2 gerado com sucesso."
+          echo "Projeto 3.3 gerado com sucesso."
 
       - name: Compilar APK
         run: |
@@ -1838,5 +1889,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ github.run_number }}
-          name: ATLAS 3.2 - v${{ github.run_number }}
+          name: ATLAS 3.3 IA Facil - v${{ github.run_number }}
           files: app/build/outputs/apk/debug/app-debug.apk
