@@ -72,8 +72,8 @@ jobs:
                   applicationId = "com.atlas.assistant"
                   minSdk = 26
                   targetSdk = 34
-                  versionCode = 10
-                  versionName = "3.5"
+                  versionCode = 11
+                  versionName = "3.6"
               }
               buildFeatures { compose = true }
               composeOptions { kotlinCompilerExtensionVersion = "1.5.8" }
@@ -232,6 +232,20 @@ jobs:
                       .putString("az_region", region.trim())
                       .putString("az_voice", voice)
                       .apply()
+              }
+
+              fun voicePass(ctx: Context): String =
+                  prefs(ctx).getString("voice_pass", "") ?: ""
+
+              fun saveVoicePass(ctx: Context, s: String) {
+                  prefs(ctx).edit().putString("voice_pass", s.trim()).apply()
+              }
+
+              fun bgListen(ctx: Context): Boolean =
+                  prefs(ctx).getBoolean("bg_listen", true)
+
+              fun saveBgListen(ctx: Context, b: Boolean) {
+                  prefs(ctx).edit().putBoolean("bg_listen", b).apply()
               }
 
               private fun pickVoice() {
@@ -435,15 +449,15 @@ jobs:
 
               suspend fun ask(ctx: Context, prompt: String): AiAnswer = withContext(Dispatchers.IO) {
                   val id = activeId(ctx)
-                      ?: return@withContext AiAnswer(false, "Nenhuma IA selecionada. Toque no botao IA, escolha GROQ e cole a chave.")
+                      ?: return@withContext AiAnswer(false, "Nenhuma IA selecionada.")
                   val p = providers.firstOrNull { it.id == id }
                       ?: return@withContext AiAnswer(false, "IA desconhecida.")
                   val key = getKey(ctx, id)
-                  if (key.isBlank()) return@withContext AiAnswer(false, "A chave esta vazia. Toque no botao IA e cole a chave gsk_...")
+                  if (key.isBlank()) return@withContext AiAnswer(false, "A chave esta vazia.")
                   val model = getModel(ctx, id)
                   try {
                       val resp = if (p.isGemini) askGemini(p, key, model, prompt) else askOpenAi(p, key, model, prompt)
-                      if (resp.isBlank()) AiAnswer(false, "A IA respondeu vazio. Tente de novo.")
+                      if (resp.isBlank()) AiAnswer(false, "A IA respondeu vazio.")
                       else AiAnswer(true, resp)
                   } catch (e: UnknownHostException) {
                       AiAnswer(false, "Sem internet ou servidor inacessivel.")
@@ -460,7 +474,7 @@ jobs:
               private fun autoRepair(ctx: Context, p: P, key: String, prompt: String): AiAnswer {
                   val models = listModels(p, key)
                   val chosen = pickChatModel(models)
-                      ?: return AiAnswer(false, "O modelo antigo saiu do ar e nao encontrei substituto. Gere uma chave nova no site da IA.")
+                      ?: return AiAnswer(false, "O modelo antigo saiu do ar e nao encontrei substituto.")
                   return try {
                       val resp = askOpenAi(p, key, chosen, prompt)
                       if (resp.isBlank()) {
@@ -470,7 +484,7 @@ jobs:
                           AiAnswer(true, resp)
                       }
                   } catch (e: Exception) {
-                      AiAnswer(false, "Falhei mesmo trocando para o modelo $chosen: ${e.message}")
+                      AiAnswer(false, "Falhei mesmo trocando de modelo: ${e.message}")
                   }
               }
 
@@ -541,8 +555,8 @@ jobs:
                   if (auth != null) c.setRequestProperty(auth.first, auth.second)
                   c.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
                   val code = c.responseCode
-                  if (code == 401) throw RuntimeException("Chave invalida ou expirada (401). Crie uma nova na pagina da IA.")
-                  if (code == 429) throw RuntimeException("Limite de uso atingido (429). Aguarde alguns minutos.")
+                  if (code == 401) throw RuntimeException("Chave invalida ou expirada (401).")
+                  if (code == 429) throw RuntimeException("Limite de uso atingido (429).")
                   if (code !in 200..299) throw RuntimeException("Erro HTTP $code")
                   return c.inputStream.bufferedReader().use { it.readText() }
               }
@@ -680,7 +694,7 @@ jobs:
               private suspend fun smartFallback(ctx: Context, raw: String): String {
                   val ai = AiTool.ask(ctx, raw)
                   if (ai.ok) return ai.text
-                  return "A IA não respondeu, senhor. Motivo: ${ai.text}. Os comandos locais continuam funcionando."
+                  return "A IA não respondeu, senhor. Motivo: ${ai.text}."
               }
 
               private fun flashlight(ctx: Context, q: String): String {
@@ -1110,6 +1124,7 @@ jobs:
 
               private fun startListening() {
                   if (Bus.paused.value) return
+                  if (!VoiceOutput.bgListen(applicationContext)) return
                   try { recognizer?.destroy() } catch (_: Exception) {}
                   recognizer = SpeechRecognizer.createSpeechRecognizer(this).apply {
                       setRecognitionListener(this@AtlasService)
@@ -1120,7 +1135,7 @@ jobs:
                           putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
                       }
                       try { startListening(i) } catch (_: Exception) {
-                          handler.postDelayed({ startListening() }, 2000)
+                          handler.postDelayed({ startListening() }, 3000)
                       }
                   }
               }
@@ -1140,6 +1155,18 @@ jobs:
 
               private fun handleCommand(text: String) {
                   handler.removeCallbacks(commandTimeout)
+                  val pass = VoiceOutput.voicePass(applicationContext)
+                  if (pass.isNotBlank() && !text.lowercase().contains(pass.lowercase())) {
+                      Bus.heard.value = text
+                      Bus.reply.value = "Comando de voz não autorizado, senhor. Diga a frase secreta."
+                      Bus.add(text, Bus.reply.value)
+                      VoiceOutput.speak(Bus.reply.value) {
+                          activated = false
+                          Bus.state.value = Bus.State.IDLE
+                          handler.post { startListening() }
+                      }
+                      return
+                  }
                   Bus.heard.value = text
                   Bus.state.value = Bus.State.PROCESSING
                   scope.launch {
@@ -1164,7 +1191,7 @@ jobs:
                   when {
                       activated && t.isNotBlank() -> handleCommand(t)
                       !activated && containsWake(t) -> activate()
-                      else -> handler.postDelayed({ startListening() }, 300)
+                      else -> handler.postDelayed({ startListening() }, 500)
                   }
               }
 
@@ -1174,10 +1201,13 @@ jobs:
                       activated = false
                       Bus.state.value = Bus.State.IDLE
                   }
+                  if (!VoiceOutput.bgListen(applicationContext)) return
                   val delay = when (error) {
-                      SpeechRecognizer.ERROR_SPEECH_TIMEOUT, SpeechRecognizer.ERROR_NO_MATCH -> 300L
-                      SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> 1000L
-                      else -> 1500L
+                      SpeechRecognizer.ERROR_SERVER_DISCONNECTED -> 4000L
+                      SpeechRecognizer.ERROR_NETWORK, SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> 4000L
+                      SpeechRecognizer.ERROR_SPEECH_TIMEOUT, SpeechRecognizer.ERROR_NO_MATCH -> 500L
+                      SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> 2000L
+                      else -> 2000L
                   }
                   handler.postDelayed({ startListening() }, delay)
               }
@@ -1319,45 +1349,60 @@ jobs:
               var clock by remember { mutableStateOf("--:--:--") }
               var micListening by remember { mutableStateOf(false) }
               var micError by remember { mutableStateOf("") }
+              var micSession by remember { mutableStateOf(0) }
+              var recognizer by remember { mutableStateOf<SpeechRecognizer?>(null) }
               val listState = rememberLazyListState()
-              val scope = rememberCoroutineScope()
 
-              val recognizer = remember {
+              LaunchedEffect(micSession) {
+                  try { recognizer?.destroy() } catch (_: Exception) {}
+                  recognizer = null
                   if (SpeechRecognizer.isRecognitionAvailable(ctx)) {
-                      SpeechRecognizer.createSpeechRecognizer(ctx).apply {
-                          setRecognitionListener(object : RecognitionListener {
-                              override fun onResults(results: Bundle?) {
-                                  micListening = false
-                                  val t = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
-                                  if (!t.isNullOrBlank()) {
-                                      micError = ""
-                                      onSend(t)
+                      val r = SpeechRecognizer.createSpeechRecognizer(ctx)
+                      r.setRecognitionListener(object : RecognitionListener {
+                          override fun onResults(results: Bundle?) {
+                              micListening = false
+                              val t = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
+                              if (!t.isNullOrBlank()) {
+                                  micError = ""
+                                  val pass = VoiceOutput.voicePass(ctx)
+                                  if (pass.isNotBlank() && !t.lowercase().contains(pass.lowercase())) {
+                                      Bus.reply.value = "Comando de voz não autorizado, senhor. Diga a frase secreta."
+                                      VoiceOutput.speak(Bus.reply.value) {}
                                   } else {
-                                      micError = "Nao entendi. Fale de novo."
+                                      onSend(t)
                                   }
+                              } else {
+                                  micError = "Nao entendi. Fale de novo."
                               }
-                              override fun onError(error: Int) {
-                                  micListening = false
-                                  micError = when (error) {
-                                      SpeechRecognizer.ERROR_NO_MATCH, SpeechRecognizer.ERROR_SPEECH_TIMEOUT ->
-                                          "Nao ouvi nada. Toque e fale mais perto."
-                                      SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS ->
-                                          "Permissao de microfone negada. Conceda nas configuracoes do celular."
-                                      SpeechRecognizer.ERROR_RECOGNIZER_BUSY ->
-                                          "Aguarde um instante e toque de novo."
-                                      else -> "Erro de voz ($error). Tente de novo ou digite."
-                                  }
+                          }
+                          override fun onError(error: Int) {
+                              micListening = false
+                              micError = when (error) {
+                                  SpeechRecognizer.ERROR_NO_MATCH, SpeechRecognizer.ERROR_SPEECH_TIMEOUT ->
+                                      "Nao ouvi nada. Toque e fale mais perto."
+                                  SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS ->
+                                      "Permissao de microfone negada. Conceda nas configuracoes."
+                                  SpeechRecognizer.ERROR_SERVER_DISCONNECTED ->
+                                      "Servidor de voz caiu. Canal renovado. Toque de novo."
+                                  SpeechRecognizer.ERROR_RECOGNIZER_BUSY ->
+                                      "Ouvinte ocupado. Canal renovado. Toque de novo."
+                                  else -> "Erro de voz ($error). Tente de novo ou digite."
                               }
-                              override fun onReadyForSpeech(params: Bundle?) {}
-                              override fun onBeginningOfSpeech() {}
-                              override fun onRmsChanged(rmsdB: Float) {}
-                              override fun onBufferReceived(buffer: ByteArray?) {}
-                              override fun onEndOfSpeech() {}
-                              override fun onPartialResults(partialResults: Bundle?) {}
-                              override fun onEvent(eventType: Int, params: Bundle?) {}
-                          })
-                      }
-                  } else null
+                              if (error == SpeechRecognizer.ERROR_SERVER_DISCONNECTED ||
+                                  error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY) {
+                                  micSession++
+                              }
+                          }
+                          override fun onReadyForSpeech(params: Bundle?) {}
+                          override fun onBeginningOfSpeech() {}
+                          override fun onRmsChanged(rmsdB: Float) {}
+                          override fun onBufferReceived(buffer: ByteArray?) {}
+                          override fun onEndOfSpeech() {}
+                          override fun onPartialResults(partialResults: Bundle?) {}
+                          override fun onEvent(eventType: Int, params: Bundle?) {}
+                      })
+                      recognizer = r
+                  }
               }
 
               DisposableEffect(Unit) {
@@ -1369,7 +1414,7 @@ jobs:
               fun startMic() {
                   val r = recognizer
                   if (r == null) {
-                      micError = "Reconhecimento de voz nao disponivel neste aparelho. Use o teclado."
+                      micError = "Reconhecimento de voz nao disponivel. Use o teclado."
                       return
                   }
                   val i = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
@@ -1383,7 +1428,8 @@ jobs:
                       r.startListening(i)
                   } catch (_: Exception) {
                       micListening = false
-                      micError = "Falha ao abrir o microfone. Tente de novo."
+                      micError = "Falha ao abrir o microfone. Renovando canal, toque de novo."
+                      micSession++
                   }
               }
 
@@ -1564,7 +1610,6 @@ jobs:
               Bus.State.SPEAKING -> GREEN
           }
 
-          /** Botao de microfone central: toca, fala, solta. Funciona em 100% dos aparelhos. */
           @Composable
           private fun MicButton(listening: Boolean, modifier: Modifier, onClick: () -> Unit) {
               val t = rememberInfiniteTransition(label = "micb")
@@ -1596,7 +1641,6 @@ jobs:
                           )
                       }
                   }
-                  val mw = 13.dp.value
                   Canvas(Modifier.size(34.dp)) {
                       val r = size.minDimension / 2f
                       val c = center
@@ -1853,7 +1897,7 @@ jobs:
                                       onClose()
                                   } else {
                                       errMsg = r.text
-                                      infoMsg = "Se o motivo for modelo antigo, o ATLAS tentou se auto-reparar. Toque em SALVAR E TESTAR de novo."
+                                      infoMsg = "Se for modelo antigo, o ATLAS tentou se auto-reparar. Toque em SALVAR E TESTAR de novo."
                                       testing = false
                                   }
                               }
@@ -1915,14 +1959,17 @@ jobs:
               var key by remember { mutableStateOf(VoiceOutput.azureKey(ctx)) }
               var region by remember { mutableStateOf(VoiceOutput.azureRegion(ctx)) }
               var voice by remember { mutableStateOf(VoiceOutput.azureVoice(ctx)) }
+              var pass by remember { mutableStateOf(VoiceOutput.voicePass(ctx)) }
+              var bgOn by remember { mutableStateOf(VoiceOutput.bgListen(ctx)) }
 
               AlertDialog(
                   onDismissRequest = onClose,
                   confirmButton = {
                       TextButton(onClick = {
                           VoiceOutput.saveAzure(ctx, key, region, voice)
+                          VoiceOutput.saveVoicePass(ctx, pass)
                           onClose()
-                          VoiceOutput.speak("Voz neural ativada com sucesso. Estou a suas ordens, senhor.") {}
+                          VoiceOutput.speak("Configuracoes de voz salvas. Estou a suas ordens, senhor.") {}
                       }) { Text("SALVAR E TESTAR") }
                   },
                   dismissButton = { TextButton(onClick = onClose) { Text("FECHAR") } },
@@ -1930,9 +1977,8 @@ jobs:
                   text = {
                       Column {
                           Text(
-                              "Sem chave: usa a voz do aparelho. Com chave Azure gratuita " +
-                              "(speech.microsoft.com, plano F0): voz de cinema. " +
-                              "Ao salvar, ele fala um teste. Botao VOZ fica VERMELHO quando ativa.",
+                              "Voz de cinema: chave gratuita em portal.azure.com (servico Speech, plano F0, regiao eastus). " +
+                              "Botao VOZ fica VERMELHO quando a chave esta salva.",
                               color = Color(0xFF9FB3C8), fontSize = 12.sp
                           )
                           Spacer(Modifier.height(10.dp))
@@ -1958,6 +2004,38 @@ jobs:
                               value = region, onValueChange = { region = it },
                               label = { Text("Regiao (ex: eastus)") },
                               modifier = Modifier.fillMaxWidth()
+                          )
+                          Spacer(Modifier.height(10.dp))
+                          Text("SEGURANCA DE VOZ", color = NEON, fontSize = 12.sp)
+                          OutlinedTextField(
+                              value = pass, onValueChange = { pass = it },
+                              label = { Text("Frase secreta (opcional)") },
+                              modifier = Modifier.fillMaxWidth()
+                          )
+                          Text(
+                              "Com frase: comando de voz so executa se contiver a frase. Ex: \"Jarvis, acesso stark, que horas sao\".",
+                              color = Color(0xFF9FB3C8), fontSize = 10.sp
+                          )
+                          Spacer(Modifier.height(8.dp))
+                          Button(
+                              onClick = {
+                                  bgOn = !bgOn
+                                  VoiceOutput.saveBgListen(ctx, bgOn)
+                              },
+                              colors = ButtonDefaults.buttonColors(
+                                  containerColor = if (bgOn) NEON_DEEP else Color(0xFF0E3A4D)
+                              ),
+                              modifier = Modifier.fillMaxWidth()
+                          ) {
+                              Text(
+                                  if (bgOn) "PLANO DE FUNDO: LIGADO (gasta bateria)"
+                                  else "PLANO DE FUNDO: DESLIGADO (recomendado)",
+                                  fontSize = 11.sp
+                              )
+                          }
+                          Text(
+                              "Desligado: sem reconexoes constantes. Use o botao do MICROFONE para falar.",
+                              color = Color(0xFF9FB3C8), fontSize = 10.sp
                           )
                       }
                   }
@@ -2073,7 +2151,7 @@ jobs:
           }
           FIM_BOOT
 
-          echo "Projeto 3.5 gerado com sucesso."
+          echo "Projeto 3.6 gerado com sucesso."
 
       - name: Compilar APK
         run: |
@@ -2099,5 +2177,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ github.run_number }}
-          name: ATLAS 3.5 Voz Garantida - v${{ github.run_number }}
+          name: ATLAS 3.6 Voz Segura - v${{ github.run_number }}
           files: app/build/outputs/apk/debug/app-debug.apk
