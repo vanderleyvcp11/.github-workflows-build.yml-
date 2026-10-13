@@ -72,8 +72,8 @@ jobs:
                   applicationId = "com.atlas.assistant"
                   minSdk = 26
                   targetSdk = 34
-                  versionCode = 11
-                  versionName = "3.6"
+                  versionCode = 12
+                  versionName = "4.0"
               }
               buildFeatures { compose = true }
               composeOptions { kotlinCompilerExtensionVersion = "1.5.8" }
@@ -92,6 +92,7 @@ jobs:
               implementation("androidx.core:core-ktx:1.12.0")
               implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
               implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
+              implementation("com.alphacephei:vosk-android:0.3.47")
           }
           FIM_APP
 
@@ -171,6 +172,113 @@ jobs:
               <foreground android:drawable="@drawable/ic_reactor"/>
           </adaptive-icon>
           FIM_LAUNCHER
+
+          cat > app/src/main/java/com/atlas/assistant/VoskSpeech.kt << 'FIM_VOSK'
+          package com.atlas.assistant
+
+          import android.content.Context
+          import kotlinx.coroutines.flow.MutableStateFlow
+          import org.vosk.Model
+          import java.io.BufferedInputStream
+          import java.io.File
+          import java.io.FileOutputStream
+          import java.net.HttpURLConnection
+          import java.net.URL
+          import java.util.zip.ZipInputStream
+
+          object VoskSpeech {
+              private const val MODEL_URL = "https://alphacephei.com/vosk/models/vosk-model-small-pt-0.3.zip"
+              private const val MODEL_DIR = "vosk-pt"
+              private const val ZIP_NAME = "vosk-pt.zip"
+
+              /** -1 desconhecido, 0 nao instalado, 1 baixando, 2 pronto, 3 erro */
+              val status = MutableStateFlow(-1)
+              val progress = MutableStateFlow(0)
+
+              @Volatile
+              private var model: Model? = null
+
+              fun refresh(ctx: Context) {
+                  status.value = if (isReady(ctx)) 2 else 0
+              }
+
+              fun modelDir(ctx: Context): File = File(ctx.filesDir, MODEL_DIR)
+
+              fun isReady(ctx: Context): Boolean =
+                  File(modelDir(ctx), "am/final.mdl").exists()
+
+              @Synchronized
+              fun model(ctx: Context): Model {
+                  model?.let { return it }
+                  val m = Model(modelDir(ctx).absolutePath)
+                  model = m
+                  return m
+              }
+
+              fun download(ctx: Context) {
+                  if (status.value == 1) return
+                  status.value = 1
+                  progress.value = 0
+                  Thread {
+                      try {
+                          val tmpZip = File(ctx.cacheDir, ZIP_NAME)
+                          val c = URL(MODEL_URL).openConnection() as HttpURLConnection
+                          c.connectTimeout = 20000
+                          c.readTimeout = 60000
+                          val total = c.contentLengthLong
+                          c.inputStream.use { raw ->
+                              BufferedInputStream(raw).use { bis ->
+                                  FileOutputStream(tmpZip).use { out ->
+                                      val buf = ByteArray(65536)
+                                      var read: Int
+                                      var done = 0L
+                                      while (bis.read(buf).also { read = it } != -1) {
+                                          out.write(buf, 0, read)
+                                          done += read
+                                          if (total > 0) progress.value = ((done * 100) / total).toInt()
+                                      }
+                                  }
+                              }
+                          }
+                          progress.value = 99
+                          unzip(tmpZip, ctx)
+                          tmpZip.delete()
+                          status.value = if (isReady(ctx)) 2 else 3
+                      } catch (_: Exception) {
+                          status.value = 3
+                      }
+                  }.start()
+              }
+
+              private fun unzip(zip: File, ctx: Context) {
+                  ZipInputStream(BufferedInputStream(zip.inputStream())).use { zis ->
+                      var entry = zis.nextEntry
+                      var root: String? = null
+                      while (entry != null) {
+                          if (root == null && entry.name.contains("/")) {
+                              root = entry.name.substringBefore("/")
+                          }
+                          val out = File(ctx.filesDir, entry.name)
+                          if (entry.isDirectory) {
+                              out.mkdirs()
+                          } else {
+                              out.parentFile?.mkdirs()
+                              FileOutputStream(out).use { zis.copyTo(it) }
+                          }
+                          entry = zis.nextEntry
+                      }
+                      if (root != null) {
+                          val src = File(ctx.filesDir, root)
+                          val dst = modelDir(ctx)
+                          if (src.exists() && src.absolutePath != dst.absolutePath) {
+                              if (dst.exists()) dst.deleteRecursively()
+                              src.renameTo(dst)
+                          }
+                      }
+                  }
+              }
+          }
+          FIM_VOSK
 
           cat > app/src/main/java/com/atlas/assistant/VoiceOutput.kt << 'FIM_VOICE'
           package com.atlas.assistant
@@ -755,7 +863,7 @@ jobs:
                   val aiName = AiTool.providers.firstOrNull { it.id == ai }?.label ?: "LOCAL"
                   return "Diagnóstico concluído. Modelo ${Build.MODEL}, Android ${Build.VERSION.RELEASE}. " +
                           "Bateria em $lvl por cento, temperatura $temp graus. Memória em uso: $mem por cento. " +
-                          "Inteligência ativa: $aiName. Todos os sistemas nominais, senhor."
+                          "Inteligência ativa: $aiName. Cérebro de voz offline: ativo. Todos os sistemas nominais, senhor."
               }
 
               private fun openApp(ctx: Context, q: String): String {
@@ -998,16 +1106,15 @@ jobs:
           import android.content.Context
           import android.content.Intent
           import android.content.pm.ServiceInfo
+          import android.media.AudioFormat
           import android.media.AudioManager
+          import android.media.AudioRecord
+          import android.media.MediaRecorder
           import android.media.ToneGenerator
           import android.os.Build
-          import android.os.Bundle
           import android.os.Handler
           import android.os.IBinder
           import android.os.Looper
-          import android.speech.RecognitionListener
-          import android.speech.RecognizerIntent
-          import android.speech.SpeechRecognizer
           import androidx.core.app.NotificationCompat
           import androidx.core.content.ContextCompat
           import kotlinx.coroutines.CoroutineScope
@@ -1016,7 +1123,10 @@ jobs:
           import kotlinx.coroutines.cancel
           import kotlinx.coroutines.flow.MutableStateFlow
           import kotlinx.coroutines.launch
-          import java.util.Locale
+          import org.json.JSONObject
+          import org.vosk.KaldiRecognizer
+          import org.vosk.LibVosk
+          import org.vosk.LogLevel
 
           object Bus {
               enum class State { IDLE, LISTENING, PROCESSING, SPEAKING }
@@ -1046,21 +1156,16 @@ jobs:
               }
           }
 
-          class AtlasService : Service(), RecognitionListener {
+          class AtlasService : Service() {
 
-              private var recognizer: SpeechRecognizer? = null
-              private var activated = false
-              private var lastActivation = 0L
               private var tone: ToneGenerator? = null
               private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
               private val handler = Handler(Looper.getMainLooper())
+              @Volatile private var running = false
+              private var activated = false
+              private var lastActivation = 0L
 
-              private val wakeWords = listOf("jarvis", "jarves", "jarbas", "atlas", "hey atlas", "ok atlas")
-
-              private val commandTimeout = Runnable {
-                  if (activated) { activated = false; Bus.state.value = Bus.State.IDLE }
-                  handler.post { startListening() }
-              }
+              private val wakeWords = listOf("jarvis", "jarves", "jarbas", "atlas", "atlas", "vamos")
 
               override fun onBind(intent: Intent?): IBinder? = null
 
@@ -1072,24 +1177,22 @@ jobs:
                   else startForeground(1, n)
                   tone = ToneGenerator(AudioManager.STREAM_MUSIC, 90)
                   VoiceOutput.init(applicationContext)
+                  try { LibVosk.setLogLevel(LogLevel.WARNINGS) } catch (_: Exception) {}
                   scope.launch {
                       Bus.paused.collect { p ->
                           if (p) {
                               activated = false
                               Bus.state.value = Bus.State.IDLE
-                              try { recognizer?.destroy() } catch (_: Exception) {}
-                              recognizer = null
                               updateNotification("Em modo descanso. Toque no app para acordar.")
                           } else {
-                              updateNotification("Diga \"Jarvis\" para despertar.")
-                              handler.post { startListening() }
+                              updateNotification("Diga \"Jarvis\" para despertar (offline).")
                           }
                       }
                   }
-                  if (!SpeechRecognizer.isRecognitionAvailable(this)) {
-                      VoiceOutput.speak("Reconhecimento de voz indisponível neste aparelho, senhor.") {}
+                  if (!VoskSpeech.isReady(this)) {
+                      updateNotification("Abra o app e instale o cerebro de voz (46MB).")
                   } else {
-                      handler.postDelayed({ startListening() }, 800)
+                      startLoop()
                   }
               }
 
@@ -1122,40 +1225,69 @@ jobs:
                       .build())
               }
 
-              private fun startListening() {
-                  if (Bus.paused.value) return
-                  if (!VoiceOutput.bgListen(applicationContext)) return
-                  try { recognizer?.destroy() } catch (_: Exception) {}
-                  recognizer = SpeechRecognizer.createSpeechRecognizer(this).apply {
-                      setRecognitionListener(this@AtlasService)
-                      val i = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                          putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                          putExtra(RecognizerIntent.EXTRA_LANGUAGE, "pt-BR")
-                          putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-                          putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
+              /** Loop de escuta 100% offline com Vosk — sem servidores, sem reconexoes. */
+              private fun startLoop() {
+                  if (running) return
+                  running = true
+                  Thread {
+                      var audio: AudioRecord? = null
+                      var rec: KaldiRecognizer? = null
+                      try {
+                          val sr = 16000
+                          val minBuf = AudioRecord.getMinBufferSize(
+                              sr, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT
+                          )
+                          audio = AudioRecord(
+                              MediaRecorder.AudioSource.MIC, sr,
+                              AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT,
+                              minBuf * 4
+                          )
+                          rec = KaldiRecognizer(VoskSpeech.model(this), sr.toFloat())
+                          audio.startRecording()
+                          val buf = ByteArray(8192)
+                          while (running) {
+                              if (Bus.paused.value || !VoiceOutput.bgListen(this)) {
+                                  Thread.sleep(300)
+                                  continue
+                              }
+                              val n = audio.read(buf, 0, buf.size)
+                              if (n <= 0) continue
+                              if (rec.acceptWaveForm(buf, n)) {
+                                  val text = JSONObject(rec.result).optString("text").trim()
+                                  if (text.isNotBlank()) processFinal(text)
+                              } else {
+                                  val p = JSONObject(rec.partialResult).optString("partial")
+                                  if (p.isNotBlank()) Bus.heard.value = p
+                              }
+                          }
+                      } catch (_: Exception) {
+                      } finally {
+                          try { audio?.stop(); audio?.release() } catch (_: Exception) {}
+                          try { rec?.close() } catch (_: Exception) {}
                       }
-                      try { startListening(i) } catch (_: Exception) {
-                          handler.postDelayed({ startListening() }, 3000)
+                  }.start()
+              }
+
+              private fun processFinal(text: String) {
+                  val now = System.currentTimeMillis()
+                  if (activated) {
+                      if (now - lastActivation < 15000) {
+                          handler.post { handleCommand(text) }
+                      } else {
+                          activated = false
+                          Bus.state.value = Bus.State.IDLE
                       }
+                  } else if (wakeWords.any { text.lowercase().contains(it) }) {
+                      activated = true
+                      lastActivation = now
+                      Bus.state.value = Bus.State.LISTENING
+                      Bus.heard.value = ""
+                      tone?.startTone(ToneGenerator.TONE_PROP_BEEP, 150)
                   }
               }
 
-              private fun containsWake(t: String) = wakeWords.any { t.lowercase().contains(it) }
-
-              private fun activate() {
-                  if (activated || Bus.paused.value) return
-                  activated = true
-                  lastActivation = System.currentTimeMillis()
-                  Bus.state.value = Bus.State.LISTENING
-                  tone?.startTone(ToneGenerator.TONE_PROP_BEEP, 150)
-                  recognizer?.stopListening()
-                  handler.postDelayed({ startListening() }, 250)
-                  handler.postDelayed(commandTimeout, 8000)
-              }
-
               private fun handleCommand(text: String) {
-                  handler.removeCallbacks(commandTimeout)
-                  val pass = VoiceOutput.voicePass(applicationContext)
+                  val pass = VoiceOutput.voicePass(this)
                   if (pass.isNotBlank() && !text.lowercase().contains(pass.lowercase())) {
                       Bus.heard.value = text
                       Bus.reply.value = "Comando de voz não autorizado, senhor. Diga a frase secreta."
@@ -1163,7 +1295,6 @@ jobs:
                       VoiceOutput.speak(Bus.reply.value) {
                           activated = false
                           Bus.state.value = Bus.State.IDLE
-                          handler.post { startListening() }
                       }
                       return
                   }
@@ -1176,51 +1307,13 @@ jobs:
                       VoiceOutput.speak(answer) {
                           activated = false
                           Bus.state.value = Bus.State.IDLE
-                          handler.post { startListening() }
                       }
                   }
               }
 
-              override fun onPartialResults(partial: Bundle?) {
-                  val t = partial?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull() ?: return
-                  if (!activated && containsWake(t)) activate()
-              }
-
-              override fun onResults(results: Bundle?) {
-                  val t = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull().orEmpty()
-                  when {
-                      activated && t.isNotBlank() -> handleCommand(t)
-                      !activated && containsWake(t) -> activate()
-                      else -> handler.postDelayed({ startListening() }, 500)
-                  }
-              }
-
-              override fun onError(error: Int) {
-                  if (Bus.paused.value) return
-                  if (activated && System.currentTimeMillis() - lastActivation > 8000) {
-                      activated = false
-                      Bus.state.value = Bus.State.IDLE
-                  }
-                  if (!VoiceOutput.bgListen(applicationContext)) return
-                  val delay = when (error) {
-                      SpeechRecognizer.ERROR_SERVER_DISCONNECTED -> 4000L
-                      SpeechRecognizer.ERROR_NETWORK, SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> 4000L
-                      SpeechRecognizer.ERROR_SPEECH_TIMEOUT, SpeechRecognizer.ERROR_NO_MATCH -> 500L
-                      SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> 2000L
-                      else -> 2000L
-                  }
-                  handler.postDelayed({ startListening() }, delay)
-              }
-
-              override fun onReadyForSpeech(params: Bundle?) {}
-              override fun onBeginningOfSpeech() {}
-              override fun onRmsChanged(rmsdB: Float) {}
-              override fun onBufferReceived(buffer: ByteArray?) {}
-              override fun onEndOfSpeech() {}
-              override fun onEvent(eventType: Int, params: Bundle?) {}
-
               override fun onDestroy() {
-                  recognizer?.destroy(); tone?.release()
+                  running = false
+                  tone?.release()
                   handler.removeCallbacksAndMessages(null)
                   scope.cancel()
                   super.onDestroy()
@@ -1234,11 +1327,10 @@ jobs:
           import android.content.Context
           import android.content.Intent
           import android.content.IntentFilter
+          import android.media.AudioFormat
+          import android.media.AudioRecord
+          import android.media.MediaRecorder
           import android.os.BatteryManager
-          import android.os.Bundle
-          import android.speech.RecognitionListener
-          import android.speech.RecognizerIntent
-          import android.speech.SpeechRecognizer
           import androidx.compose.animation.core.FastOutSlowInEasing
           import androidx.compose.animation.core.LinearEasing
           import androidx.compose.animation.core.RepeatMode
@@ -1300,8 +1392,14 @@ jobs:
           import androidx.compose.ui.text.style.TextAlign
           import androidx.compose.ui.unit.dp
           import androidx.compose.ui.unit.sp
+          import kotlinx.coroutines.Dispatchers
+          import kotlinx.coroutines.Job
+          import kotlinx.coroutines.isActive
           import kotlinx.coroutines.launch
           import kotlinx.coroutines.delay
+          import kotlinx.coroutines.withContext
+          import org.json.JSONObject
+          import org.vosk.KaldiRecognizer
           import java.text.SimpleDateFormat
           import java.util.Date
           import java.util.Locale
@@ -1348,88 +1446,90 @@ jobs:
               var temp by remember { mutableStateOf(30f) }
               var clock by remember { mutableStateOf("--:--:--") }
               var micListening by remember { mutableStateOf(false) }
+              var micPartial by remember { mutableStateOf("") }
               var micError by remember { mutableStateOf("") }
-              var micSession by remember { mutableStateOf(0) }
-              var recognizer by remember { mutableStateOf<SpeechRecognizer?>(null) }
+              var micJob by remember { mutableStateOf<Job?>(null) }
+              val voskStatus by VoskSpeech.status.collectAsState()
+              val voskProgress by VoskSpeech.progress.collectAsState()
               val listState = rememberLazyListState()
+              val scope = rememberCoroutineScope()
 
-              LaunchedEffect(micSession) {
-                  try { recognizer?.destroy() } catch (_: Exception) {}
-                  recognizer = null
-                  if (SpeechRecognizer.isRecognitionAvailable(ctx)) {
-                      val r = SpeechRecognizer.createSpeechRecognizer(ctx)
-                      r.setRecognitionListener(object : RecognitionListener {
-                          override fun onResults(results: Bundle?) {
-                              micListening = false
-                              val t = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
-                              if (!t.isNullOrBlank()) {
-                                  micError = ""
-                                  val pass = VoiceOutput.voicePass(ctx)
-                                  if (pass.isNotBlank() && !t.lowercase().contains(pass.lowercase())) {
-                                      Bus.reply.value = "Comando de voz não autorizado, senhor. Diga a frase secreta."
-                                      VoiceOutput.speak(Bus.reply.value) {}
-                                  } else {
-                                      onSend(t)
-                                  }
-                              } else {
-                                  micError = "Nao entendi. Fale de novo."
-                              }
-                          }
-                          override fun onError(error: Int) {
-                              micListening = false
-                              micError = when (error) {
-                                  SpeechRecognizer.ERROR_NO_MATCH, SpeechRecognizer.ERROR_SPEECH_TIMEOUT ->
-                                      "Nao ouvi nada. Toque e fale mais perto."
-                                  SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS ->
-                                      "Permissao de microfone negada. Conceda nas configuracoes."
-                                  SpeechRecognizer.ERROR_SERVER_DISCONNECTED ->
-                                      "Servidor de voz caiu. Canal renovado. Toque de novo."
-                                  SpeechRecognizer.ERROR_RECOGNIZER_BUSY ->
-                                      "Ouvinte ocupado. Canal renovado. Toque de novo."
-                                  else -> "Erro de voz ($error). Tente de novo ou digite."
-                              }
-                              if (error == SpeechRecognizer.ERROR_SERVER_DISCONNECTED ||
-                                  error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY) {
-                                  micSession++
-                              }
-                          }
-                          override fun onReadyForSpeech(params: Bundle?) {}
-                          override fun onBeginningOfSpeech() {}
-                          override fun onRmsChanged(rmsdB: Float) {}
-                          override fun onBufferReceived(buffer: ByteArray?) {}
-                          override fun onEndOfSpeech() {}
-                          override fun onPartialResults(partialResults: Bundle?) {}
-                          override fun onEvent(eventType: Int, params: Bundle?) {}
-                      })
-                      recognizer = r
-                  }
-              }
+              LaunchedEffect(Unit) { VoskSpeech.refresh(ctx) }
 
               DisposableEffect(Unit) {
-                  onDispose {
-                      try { recognizer?.destroy() } catch (_: Exception) {}
-                  }
+                  onDispose { micJob?.cancel() }
               }
 
               fun startMic() {
-                  val r = recognizer
-                  if (r == null) {
-                      micError = "Reconhecimento de voz nao disponivel. Use o teclado."
+                  if (!VoskSpeech.isReady(ctx)) {
+                      micError = "Instale o CEREBRO DE VOZ no botao abaixo do reator."
                       return
                   }
-                  val i = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                      putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                      putExtra(RecognizerIntent.EXTRA_LANGUAGE, "pt-BR")
-                      putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
+                  if (micListening) {
+                      micListening = false
+                      return
                   }
                   micError = ""
+                  micPartial = ""
                   micListening = true
-                  try {
-                      r.startListening(i)
-                  } catch (_: Exception) {
-                      micListening = false
-                      micError = "Falha ao abrir o microfone. Renovando canal, toque de novo."
-                      micSession++
+                  micJob = scope.launch(Dispatchers.IO) {
+                      var audio: AudioRecord? = null
+                      var rec: KaldiRecognizer? = null
+                      var finalText = ""
+                      try {
+                          val sr = 16000
+                          val minBuf = AudioRecord.getMinBufferSize(
+                              sr, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT
+                          )
+                          audio = AudioRecord(
+                              MediaRecorder.AudioSource.MIC, sr,
+                              AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT,
+                              minBuf * 4
+                          )
+                          rec = KaldiRecognizer(VoskSpeech.model(ctx), sr.toFloat())
+                          audio.startRecording()
+                          val buf = ByteArray(8192)
+                          while (isActive && micListening) {
+                              val n = audio.read(buf, 0, buf.size)
+                              if (n <= 0) continue
+                              if (rec.acceptWaveForm(buf, n)) {
+                                  val t = JSONObject(rec.result).optString("text").trim()
+                                  if (t.isNotBlank()) finalText = t
+                              } else {
+                                  val p = JSONObject(rec.partialResult).optString("partial")
+                                  if (p.isNotBlank()) micPartial = p
+                              }
+                          }
+                          if (finalText.isBlank()) {
+                              try {
+                                  finalText = JSONObject(rec.finalResult).optString("text").trim()
+                              } catch (_: Exception) {}
+                          }
+                      } catch (e: Exception) {
+                          withContext(Dispatchers.Main) {
+                              micListening = false
+                              micError = "Erro de microfone: ${e.message}"
+                          }
+                      } finally {
+                          try { audio?.stop(); audio?.release() } catch (_: Exception) {}
+                          try { rec?.close() } catch (_: Exception) {}
+                      }
+                      withContext(Dispatchers.Main) {
+                          micListening = false
+                          val t = finalText.trim()
+                          if (t.isBlank()) {
+                              micError = "Nao ouvi nada. Toque e fale mais perto."
+                          } else {
+                              micPartial = t
+                              val pass = VoiceOutput.voicePass(ctx)
+                              if (pass.isNotBlank() && !t.lowercase().contains(pass.lowercase())) {
+                                  Bus.reply.value = "Comando de voz não autorizado, senhor. Diga a frase secreta."
+                                  VoiceOutput.speak(Bus.reply.value) {}
+                              } else {
+                                  onSend(t)
+                              }
+                          }
+                      }
                   }
               }
 
@@ -1493,9 +1593,18 @@ jobs:
                       ) { if (!paused) startMic() }
                   }
                   Spacer(Modifier.height(4.dp))
-                  if (micError.isNotEmpty()) {
+
+                  VoskBanner(voskStatus, voskProgress)
+                  Spacer(Modifier.height(4.dp))
+
+                  if (micListening) {
+                      Text(
+                          if (micPartial.isBlank()) "OUVINDO... fale agora" else micPartial,
+                          color = if (micPartial.isBlank()) NEON.copy(alpha = 0.6f) else GOLD,
+                          fontSize = 13.sp, textAlign = TextAlign.Center
+                      )
+                  } else if (micError.isNotEmpty()) {
                       Text(micError, color = RED, fontSize = 11.sp, textAlign = TextAlign.Center)
-                      Spacer(Modifier.height(4.dp))
                   }
                   Spacer(Modifier.height(4.dp))
 
@@ -1506,7 +1615,7 @@ jobs:
                               val aiLabel = AiTool.providers.firstOrNull { it.id == aiActive }?.label ?: "LOCAL"
                               Column {
                                   StatusLine("[STATUS] SISTEMAS OK", 0)
-                                  StatusLine("[AUDIO] VOZ ATIVA", 1)
+                                  StatusLine("[AUDIO] VOZ OFFLINE", 1)
                                   StatusLine(
                                       if (paused) "[MODO] DESCANSO" else "[MODO] ESCUTANDO",
                                       2
@@ -1593,6 +1702,36 @@ jobs:
                       showVoz = false
                       vozOk = VoiceOutput.azureKey(ctx).isNotBlank()
                   })
+              }
+          }
+
+          @Composable
+          private fun VoskBanner(status: Int, progress: Int) {
+              val ctx = LocalContext.current
+              when (status) {
+                  2 -> Text("CEREBRO DE VOZ OFFLINE: ONLINE", color = GREEN, fontSize = 9.sp, letterSpacing = 2.sp)
+                  1 -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                      Text("BAIXANDO CEREBRO DE VOZ: $progress%", color = AMBER, fontSize = 10.sp)
+                      Box(
+                          Modifier.fillMaxWidth().height(5.dp).padding(horizontal = 20.dp)
+                              .background(NEON_DARK, RoundedCornerShape(3.dp))
+                      ) {
+                          Box(
+                              Modifier.fillMaxWidth((progress / 100f).coerceIn(0.02f, 1f))
+                                  .height(5.dp).background(NEON, RoundedCornerShape(3.dp))
+                          )
+                      }
+                  }
+                  else -> Button(
+                      onClick = { VoskSpeech.download(ctx) },
+                      colors = ButtonDefaults.buttonColors(containerColor = NEON_DEEP)
+                  ) {
+                      Text(
+                          if (status == 3) "FALHOU — TOCAR PARA TENTAR DE NOVO (46MB)"
+                          else "INSTALAR CEREBRO DE VOZ OFFLINE (46MB, uma vez)",
+                          fontSize = 11.sp
+                      )
+                  }
               }
           }
 
@@ -1977,8 +2116,7 @@ jobs:
                   text = {
                       Column {
                           Text(
-                              "Voz de cinema: chave gratuita em portal.azure.com (servico Speech, plano F0, regiao eastus). " +
-                              "Botao VOZ fica VERMELHO quando a chave esta salva.",
+                              "Voz de cinema: chave gratuita em portal.azure.com (Speech, plano F0, regiao eastus).",
                               color = Color(0xFF9FB3C8), fontSize = 12.sp
                           )
                           Spacer(Modifier.height(10.dp))
@@ -2013,7 +2151,7 @@ jobs:
                               modifier = Modifier.fillMaxWidth()
                           )
                           Text(
-                              "Com frase: comando de voz so executa se contiver a frase. Ex: \"Jarvis, acesso stark, que horas sao\".",
+                              "Com frase: comando de voz so executa se contiver a frase.",
                               color = Color(0xFF9FB3C8), fontSize = 10.sp
                           )
                           Spacer(Modifier.height(8.dp))
@@ -2028,13 +2166,13 @@ jobs:
                               modifier = Modifier.fillMaxWidth()
                           ) {
                               Text(
-                                  if (bgOn) "PLANO DE FUNDO: LIGADO (gasta bateria)"
-                                  else "PLANO DE FUNDO: DESLIGADO (recomendado)",
+                                  if (bgOn) "JARVIS DE FUNDO: LIGADO (oficial)"
+                                  else "JARVIS DE FUNDO: DESLIGADO",
                                   fontSize = 11.sp
                               )
                           }
                           Text(
-                              "Desligado: sem reconexoes constantes. Use o botao do MICROFONE para falar.",
+                              "Ligado: diz Jarvis em qualquer tela (offline). Desligado: so o botao do microfone.",
                               color = Color(0xFF9FB3C8), fontSize = 10.sp
                           )
                       }
@@ -2151,7 +2289,7 @@ jobs:
           }
           FIM_BOOT
 
-          echo "Projeto 3.6 gerado com sucesso."
+          echo "Projeto 4.0 gerado com sucesso."
 
       - name: Compilar APK
         run: |
@@ -2177,5 +2315,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ github.run_number }}
-          name: ATLAS 3.6 Voz Segura - v${{ github.run_number }}
+          name: ATLAS 4.0 Cerebro Offline - v${{ github.run_number }}
           files: app/build/outputs/apk/debug/app-debug.apk
