@@ -72,8 +72,8 @@ jobs:
                   applicationId = "com.atlas.assistant"
                   minSdk = 26
                   targetSdk = 34
-                  versionCode = 27
-                  versionName = "7.2"
+                  versionCode = 28
+                  versionName = "7.3"
               }
               buildFeatures { compose = true }
               composeOptions { kotlinCompilerExtensionVersion = "1.5.8" }
@@ -695,7 +695,6 @@ jobs:
                   try {
                       val resp = if (p.isGemini) askGemini(p, key, model, prompt) else askOpenAi(p, key, model, prompt)
                       if (resp.isBlank()) {
-                          // 1 retry com prompt simplificado
                           val retry = if (p.isGemini) askGemini(p, key, model, "Responda em uma frase curta: $prompt")
                           else askOpenAi(p, key, model, "Responda em uma frase curta: $prompt")
                           if (retry.isBlank()) AiAnswer(false, "Sem resposta util para essa frase.")
@@ -898,7 +897,6 @@ jobs:
                   try { route(ctx, raw, cleanFillers(raw)) }
                   catch (e: Exception) { "Encontrei uma falha ao executar: ${e.message}, senhor." }
 
-              /** Remove palavras soltas do inicio da transcricao ("e", "ah", "entao"...). */
               private fun cleanFillers(s: String): String {
                   var t = s.trim()
                   val fillers = listOf("e ", "é ", "ah ", "então ", "entao ", "tipo ", "olha ", "bem ", "ok ")
@@ -1351,6 +1349,12 @@ jobs:
                   dataSize += n
               }
 
+              fun writeOffset(pcm: ByteArray, off: Int, n: Int) {
+                  if (n <= 0) return
+                  out.write(pcm, off, n)
+                  dataSize += n
+              }
+
               fun finish(): File {
                   out.flush()
                   out.close()
@@ -1594,7 +1598,6 @@ jobs:
                                       tone?.startTone(ToneGenerator.TONE_PROP_BEEP, 120)
                                       Bus.state.value = Bus.State.LISTENING
                                       Bus.heard.value = ""
-                                      lastPartialForVosk = ""
                                       startCapture(2)
                                   }
                               } else {
@@ -1604,15 +1607,12 @@ jobs:
                                       continue
                                   }
 
-                                  // NOTA: nao mostramos mais o rascunho do Vosk na tela
-                                  // (era confuso). A transcricao final vem do Whisper.
-
                                   val w = writer
                                   if (w != null) {
                                       if (skipBytes > 0) {
                                           val take = minOf(skipBytes, n)
                                           skipBytes -= take
-                                          if (n > take) w.write(buf, take, n - take)
+                                          if (n > take) w.writeOffset(buf, take, n - take)
                                       } else {
                                           w.write(buf, n)
                                       }
@@ -1642,8 +1642,6 @@ jobs:
                       }
                   }.start()
               }
-
-              private var lastPartialForVosk = ""
 
               private fun finishCapture(rec: Recognizer?, voskPartial: String) {
                   Bus.audioLevel.value = 0f
@@ -2738,7 +2736,7 @@ jobs:
           }
           FIM_BOOT
 
-          echo "Projeto 7.2 gerado com sucesso."
+          echo "Projeto 7.3 gerado com sucesso."
 
       - name: Embutir cerebro de voz offline (fallback)
         run: |
@@ -2773,5 +2771,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ github.run_number }}
-          name: ATLAS 7.2 Confianca Visual - v${{ github.run_number }}
+          name: ATLAS 7.3 Whisper Completo - v${{ github.run_number }}
           files: app/build/outputs/apk/debug/app-debug.apk
