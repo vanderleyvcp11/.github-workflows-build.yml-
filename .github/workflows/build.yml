@@ -72,8 +72,8 @@ jobs:
                   applicationId = "com.atlas.assistant"
                   minSdk = 26
                   targetSdk = 34
-                  versionCode = 21
-                  versionName = "4.9"
+                  versionCode = 22
+                  versionName = "5.0"
               }
               buildFeatures { compose = true }
               composeOptions { kotlinCompilerExtensionVersion = "1.5.8" }
@@ -188,10 +188,6 @@ jobs:
           import java.io.FileOutputStream
           import java.util.zip.ZipFile
 
-          /**
-           * 4.9: varre TODOS os final.mdl extraidos (qualquer estrutura: flat
-           * ou am/) e deixa o proprio motor VOSK validar cada candidato.
-           */
           object VoskSpeech {
 
               val status = MutableStateFlow(-1)
@@ -250,7 +246,6 @@ jobs:
                   errorMsg.value = ""
                   Thread {
                       try {
-                          // PASSO 1: copia o asset cru para arquivo real
                           progress.value = 10
                           val zipFile = File(ctx.filesDir, "model-pt.zip")
                           ctx.assets.open("model-pt.zip").use { input ->
@@ -267,7 +262,6 @@ jobs:
                           }
                           progress.value = 40
 
-                          // PASSO 2: valida pelo diretorio central e extrai
                           val tmp = File(ctx.filesDir, "vosk-extract-tmp")
                           tmp.deleteRecursively()
                           tmp.mkdirs()
@@ -287,7 +281,6 @@ jobs:
                           }
                           progress.value = 70
 
-                          // PASSO 3: coleta TODOS os final.mdl e monta candidatos
                           val finals = ArrayList<File>()
                           val queue = ArrayDeque<File>()
                           queue.add(tmp)
@@ -308,7 +301,6 @@ jobs:
                           }
                           candidates.add(tmp)
 
-                          // PASSO 4: o motor VOSK decide o vencedor
                           var winner: File? = null
                           var lastErr: Throwable? = null
                           for (c in candidates) {
@@ -644,7 +636,7 @@ jobs:
 
               suspend fun ask(ctx: Context, prompt: String): AiAnswer = withContext(Dispatchers.IO) {
                   val id = activeId(ctx)
-                      ?: return@withContext AiAnswer(false, "Nenhuma IA selecionada. Toque no botao IA e cole a chave gsk_...")
+                      ?: return@withContext AiAnswer(false, "Nenhuma IA selecionada.")
                   val p = providers.firstOrNull { it.id == id }
                       ?: return@withContext AiAnswer(false, "IA desconhecida.")
                   val key = getKey(ctx, id)
@@ -1222,6 +1214,9 @@ jobs:
               val heard = MutableStateFlow("")
               val reply = MutableStateFlow("")
               val log = MutableStateFlow<List<Pair<String, String>>>(emptyList())
+              val liveText = MutableStateFlow("")
+              val manualTrigger = MutableStateFlow(0)
+              val forceFinalize = MutableStateFlow(0)
               fun add(user: String, atlas: String) {
                   log.value = (listOf(user to atlas) + log.value).take(40)
               }
@@ -1234,8 +1229,6 @@ jobs:
               fun ask(text: String) {
                   if (!::appCtx.isInitialized) return
                   val t = text.trim()
-
-                  // CHAVE GROQ colada no campo de comando -> ativa automaticamente
                   if (t.startsWith("gsk_") && t.length > 25) {
                       Bus.heard.value = "(chave Groq detectada)"
                       Bus.state.value = Bus.State.PROCESSING
@@ -1252,7 +1245,6 @@ jobs:
                       }
                       return
                   }
-
                   Bus.heard.value = text
                   Bus.state.value = Bus.State.PROCESSING
                   scope.launch {
@@ -1264,16 +1256,23 @@ jobs:
               }
           }
 
+          /**
+           * 5.0: PIPELINE UNICO DE MICROFONE. O servico e o unico dono do mic.
+           * O botao da tela apenas sinaliza (sem abrir segundo canal).
+           * Acumulador de fala com execucao por silencio (2,5s).
+           * Wake word detectada em resultados parciais, no meio da fala.
+           */
           class AtlasService : Service() {
 
               private var tone: ToneGenerator? = null
               private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
               private val handler = Handler(Looper.getMainLooper())
               @Volatile private var running = false
-              private var activated = false
-              private var lastActivation = 0L
 
-              private val wakeWords = listOf("jarvis", "jarves", "jarbas", "javis", "atlas", "hey atlas", "ok atlas")
+              private val wakeWords = listOf(
+                  "jarvis", "javis", "jarvez", "javes", "javiz", "jarbas",
+                  "davis", "atlas", "hey atlas", "ok atlas", "o atlas"
+              )
 
               override fun onBind(intent: Intent?): IBinder? = null
 
@@ -1293,10 +1292,23 @@ jobs:
                       }
                   }
                   scope.launch {
+                      Bus.manualTrigger.collect {
+                          if (!running) return@collect
+                          if (VoskSpeech.isReady(this@AtlasService) &&
+                              Bus.state.value == Bus.State.IDLE && !Bus.paused.value
+                          ) {
+                              tone?.startTone(ToneGenerator.TONE_PROP_BEEP, 150)
+                              Bus.state.value = Bus.State.LISTENING
+                              Bus.heard.value = ""
+                              Bus.liveText.value = ""
+                          }
+                      }
+                  }
+                  scope.launch {
                       Bus.paused.collect { p ->
                           if (p) {
-                              activated = false
                               Bus.state.value = Bus.State.IDLE
+                              Bus.liveText.value = ""
                               updateNotification("Em modo descanso. Toque no app para acordar.")
                           } else {
                               updateNotification("Diga \"Jarvis\" para despertar (offline).")
@@ -1355,21 +1367,109 @@ jobs:
                           rec = Recognizer(VoskSpeech.model(this), sr.toFloat())
                           audio.startRecording()
                           val buf = ByteArray(8192)
+                          var cmdBuilder = StringBuilder()
+                          var lastChange = 0L
+                          var lastPartial = ""
+                          var forceSeq = 0
                           while (running) {
                               val st = Bus.state.value
                               if (Bus.paused.value || !VoiceOutput.bgListen(this) ||
-                                  st == Bus.State.SPEAKING || st == Bus.State.PROCESSING) {
+                                  st == Bus.State.PROCESSING || st == Bus.State.SPEAKING
+                              ) {
                                   audio.read(buf, 0, buf.size)
                                   continue
                               }
                               val n = audio.read(buf, 0, buf.size)
                               if (n <= 0) continue
-                              if (rec.acceptWaveForm(buf, n)) {
-                                  val text = JSONObject(rec.result).optString("text").trim()
-                                  if (text.isNotBlank()) processFinal(text)
+                              val now = System.currentTimeMillis()
+
+                              if (st == Bus.State.IDLE) {
+                                  if (rec.acceptWaveForm(buf, n)) {
+                                      val text = JSONObject(rec.result).optString("text").trim()
+                                      if (text.isNotBlank()) {
+                                          val low = text.lowercase()
+                                          val w = wakeWords.firstOrNull { low.contains(it) }
+                                          if (w != null) {
+                                              tone?.startTone(ToneGenerator.TONE_PROP_BEEP, 150)
+                                              val rest = text
+                                                  .substring(low.indexOf(w) + w.length)
+                                                  .trim(' ', ',', '.', '!', '?')
+                                              if (rest.length > 2) {
+                                                  Bus.state.value = Bus.State.PROCESSING
+                                                  val cmd = rest
+                                                  handler.post { doHandle(cmd) }
+                                              } else {
+                                                  Bus.state.value = Bus.State.LISTENING
+                                                  Bus.heard.value = ""
+                                                  Bus.liveText.value = ""
+                                                  cmdBuilder = StringBuilder()
+                                                  lastPartial = ""
+                                                  lastChange = now
+                                              }
+                                          }
+                                      }
+                                  } else {
+                                      val p = JSONObject(rec.partialResult).optString("partial")
+                                      if (p.isNotBlank() && p != lastPartial) {
+                                          lastPartial = p
+                                          val low = p.lowercase()
+                                          if (wakeWords.any { low.contains(it) }) {
+                                              tone?.startTone(ToneGenerator.TONE_PROP_BEEP, 150)
+                                              Bus.state.value = Bus.State.LISTENING
+                                              Bus.heard.value = ""
+                                              Bus.liveText.value = ""
+                                              cmdBuilder = StringBuilder()
+                                              lastChange = now
+                                          }
+                                      }
+                                  }
                               } else {
-                                  val p = JSONObject(rec.partialResult).optString("partial")
-                                  if (p.isNotBlank()) Bus.heard.value = p
+                                  // LISTENING: acumula a fala inteira
+                                  if (Bus.forceFinalize.value != forceSeq) {
+                                      forceSeq = Bus.forceFinalize.value
+                                      val cmd = cmdBuilder.toString().trim()
+                                      cmdBuilder = StringBuilder()
+                                      Bus.liveText.value = ""
+                                      lastPartial = ""
+                                      lastChange = 0
+                                      if (cmd.isNotBlank()) {
+                                          Bus.state.value = Bus.State.PROCESSING
+                                          handler.post { doHandle(cmd) }
+                                      } else {
+                                          Bus.state.value = Bus.State.IDLE
+                                      }
+                                  } else {
+                                      if (rec.acceptWaveForm(buf, n)) {
+                                          val text = JSONObject(rec.result).optString("text").trim()
+                                          if (text.isNotBlank()) {
+                                              cmdBuilder.append(text).append(' ')
+                                              Bus.liveText.value = cmdBuilder.toString().trim()
+                                              lastChange = now
+                                          }
+                                      } else {
+                                          val p = JSONObject(rec.partialResult).optString("partial")
+                                          if (p.isNotBlank() && p != lastPartial) {
+                                              lastPartial = p
+                                              val acc = cmdBuilder.toString().trim()
+                                              Bus.liveText.value = (if (acc.isEmpty()) p else "$acc $p").trim()
+                                              lastChange = now
+                                          }
+                                      }
+                                      val b = cmdBuilder.toString().trim()
+                                      if (b.isNotBlank() && lastChange > 0 && now - lastChange > 2500) {
+                                          cmdBuilder = StringBuilder()
+                                          Bus.liveText.value = ""
+                                          lastPartial = ""
+                                          lastChange = 0
+                                          Bus.state.value = Bus.State.PROCESSING
+                                          handler.post { doHandle(b) }
+                                      } else if (b.isBlank() && lastChange > 0 && now - lastChange > 10000) {
+                                          Bus.state.value = Bus.State.IDLE
+                                          Bus.heard.value = ""
+                                          Bus.liveText.value = ""
+                                          lastChange = 0
+                                      }
+                                  }
                               }
                           }
                       } catch (_: Exception) {
@@ -1380,53 +1480,26 @@ jobs:
                   }.start()
               }
 
-              private fun containsWake(t: String): Boolean =
-                  wakeWords.any { t.lowercase().contains(it) }
-
-              private fun stripWake(t: String): String {
-                  val low = t.lowercase()
+              private fun doHandle(raw: String) {
+                  var text = raw.trim()
+                  val low = text.lowercase()
                   for (w in wakeWords) {
                       val idx = low.indexOf(w)
                       if (idx >= 0) {
-                          return t.substring((idx + w.length)).trim(' ', ',', '.', '!', '?')
+                          text = text.substring(idx + w.length).trim(' ', ',', '.', '!', '?')
+                          break
                       }
                   }
-                  return t
-              }
-
-              private fun processFinal(text: String) {
-                  val now = System.currentTimeMillis()
-                  if (activated) {
-                      if (now - lastActivation < 15000) {
-                          handler.post { handleCommand(text) }
-                      } else {
-                          activated = false
-                          Bus.state.value = Bus.State.IDLE
-                      }
-                  } else if (containsWake(text)) {
-                      val rest = stripWake(text)
-                      tone?.startTone(ToneGenerator.TONE_PROP_BEEP, 150)
-                      if (rest.isNotBlank() && rest.length > 2) {
-                          handler.post { handleCommand(rest) }
-                      } else {
-                          activated = true
-                          lastActivation = now
-                          Bus.state.value = Bus.State.LISTENING
-                          Bus.heard.value = ""
-                      }
+                  if (text.isBlank()) {
+                      Bus.state.value = Bus.State.IDLE
+                      return
                   }
-              }
-
-              private fun handleCommand(text: String) {
                   val pass = VoiceOutput.voicePass(this)
                   if (pass.isNotBlank() && !text.lowercase().contains(pass.lowercase())) {
                       Bus.heard.value = text
                       Bus.reply.value = "Comando de voz não autorizado, senhor. Diga a frase secreta."
                       Bus.add(text, Bus.reply.value)
-                      VoiceOutput.speak(Bus.reply.value) {
-                          activated = false
-                          Bus.state.value = Bus.State.IDLE
-                      }
+                      VoiceOutput.speak(Bus.reply.value) { Bus.state.value = Bus.State.IDLE }
                       return
                   }
                   Bus.heard.value = text
@@ -1435,10 +1508,7 @@ jobs:
                       val answer = AtlasBrain.handle(applicationContext, text)
                       Bus.reply.value = answer
                       Bus.add(text, answer)
-                      VoiceOutput.speak(answer) {
-                          activated = false
-                          Bus.state.value = Bus.State.IDLE
-                      }
+                      VoiceOutput.speak(answer) { Bus.state.value = Bus.State.IDLE }
                   }
               }
 
@@ -1458,9 +1528,6 @@ jobs:
           import android.content.Context
           import android.content.Intent
           import android.content.IntentFilter
-          import android.media.AudioFormat
-          import android.media.AudioRecord
-          import android.media.MediaRecorder
           import android.os.BatteryManager
           import androidx.compose.animation.core.FastOutSlowInEasing
           import androidx.compose.animation.core.LinearEasing
@@ -1498,13 +1565,11 @@ jobs:
           import androidx.compose.material3.Text
           import androidx.compose.material3.TextButton
           import androidx.compose.runtime.Composable
-          import androidx.compose.runtime.DisposableEffect
           import androidx.compose.runtime.LaunchedEffect
           import androidx.compose.runtime.collectAsState
           import androidx.compose.runtime.getValue
           import androidx.compose.runtime.mutableStateOf
           import androidx.compose.runtime.remember
-          import androidx.compose.runtime.rememberCoroutineScope
           import androidx.compose.runtime.setValue
           import androidx.compose.ui.Alignment
           import androidx.compose.ui.Modifier
@@ -1523,14 +1588,7 @@ jobs:
           import androidx.compose.ui.text.style.TextAlign
           import androidx.compose.ui.unit.dp
           import androidx.compose.ui.unit.sp
-          import kotlinx.coroutines.Dispatchers
-          import kotlinx.coroutines.Job
-          import kotlinx.coroutines.isActive
-          import kotlinx.coroutines.launch
           import kotlinx.coroutines.delay
-          import kotlinx.coroutines.withContext
-          import org.json.JSONObject
-          import org.vosk.Recognizer
           import java.text.SimpleDateFormat
           import java.util.Date
           import java.util.Locale
@@ -1577,6 +1635,7 @@ jobs:
               val heard by Bus.heard.collectAsState()
               val reply by Bus.reply.collectAsState()
               val log by Bus.log.collectAsState()
+              val live by Bus.liveText.collectAsState()
               var input by remember { mutableStateOf("") }
               var showAi by remember { mutableStateOf(false) }
               var showVoz by remember { mutableStateOf(false) }
@@ -1586,93 +1645,22 @@ jobs:
               var batt by remember { mutableStateOf(0.6f) }
               var temp by remember { mutableStateOf(30f) }
               var clock by remember { mutableStateOf("--:--:--") }
-              var micListening by remember { mutableStateOf(false) }
-              var micPartial by remember { mutableStateOf("") }
-              var micError by remember { mutableStateOf("") }
-              var micJob by remember { mutableStateOf<Job?>(null) }
+              var micHint by remember { mutableStateOf("") }
               val voskStatus by VoskSpeech.status.collectAsState()
               val voskError by VoskSpeech.errorMsg.collectAsState()
               val voskProgress by VoskSpeech.progress.collectAsState()
               val listState = rememberLazyListState()
-              val scope = rememberCoroutineScope()
 
               LaunchedEffect(Unit) { VoskSpeech.refresh(ctx) }
 
-              DisposableEffect(Unit) {
-                  onDispose { micJob?.cancel() }
-              }
-
-              fun startMic() {
-                  if (!VoskSpeech.isReady(ctx)) {
-                      micError = "Toque em PREPARAR CEREBRO DE VOZ antes de falar."
+              fun onMicTap() {
+                  if (voskStatus != 2) {
+                      micHint = "Toque em PREPARAR CEREBRO DE VOZ antes de falar."
                       return
                   }
-                  if (micListening) {
-                      micListening = false
-                      return
-                  }
-                  micError = ""
-                  micPartial = ""
-                  micListening = true
-                  micJob = scope.launch(Dispatchers.IO) {
-                      var audio: AudioRecord? = null
-                      var rec: Recognizer? = null
-                      var finalText = ""
-                      try {
-                          val sr = 16000
-                          val minBuf = AudioRecord.getMinBufferSize(
-                              sr, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT
-                          )
-                          audio = AudioRecord(
-                              MediaRecorder.AudioSource.MIC, sr,
-                              AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT,
-                              minBuf * 4
-                          )
-                          rec = Recognizer(VoskSpeech.model(ctx), sr.toFloat())
-                          audio.startRecording()
-                          val buf = ByteArray(8192)
-                          while (isActive && micListening) {
-                              val n = audio.read(buf, 0, buf.size)
-                              if (n <= 0) continue
-                              if (rec.acceptWaveForm(buf, n)) {
-                                  val t = JSONObject(rec.result).optString("text").trim()
-                                  if (t.isNotBlank()) finalText = t
-                              } else {
-                                  val p = JSONObject(rec.partialResult).optString("partial")
-                                  if (p.isNotBlank()) micPartial = p
-                              }
-                          }
-                          if (finalText.isBlank()) {
-                              try {
-                                  finalText = JSONObject(rec.finalResult).optString("text").trim()
-                              } catch (_: Exception) {}
-                          }
-                      } catch (e: Exception) {
-                          withContext(Dispatchers.Main) {
-                              micListening = false
-                              micError = "Erro de microfone: ${e.message}"
-                          }
-                      } finally {
-                          try { audio?.stop(); audio?.release() } catch (_: Exception) {}
-                          try { rec?.close() } catch (_: Exception) {}
-                      }
-                      withContext(Dispatchers.Main) {
-                          micListening = false
-                          val t = finalText.trim()
-                          if (t.isBlank()) {
-                              micError = "Nao ouvi nada. Toque e fale mais perto."
-                          } else {
-                              micPartial = t
-                              val pass = VoiceOutput.voicePass(ctx)
-                              if (pass.isNotBlank() && !t.lowercase().contains(pass.lowercase())) {
-                                  Bus.reply.value = "Comando de voz não autorizado, senhor. Diga a frase secreta."
-                                  VoiceOutput.speak(Bus.reply.value) {}
-                              } else {
-                                  onSend(t)
-                              }
-                          }
-                      }
-                  }
+                  micHint = ""
+                  if (state == Bus.State.LISTENING) Bus.forceFinalize.value++
+                  else Bus.manualTrigger.value++
               }
 
               LaunchedEffect(Unit) {
@@ -1733,23 +1721,28 @@ jobs:
                               active = !paused
                           )
                           MicButton(
-                              listening = micListening,
+                              listening = state == Bus.State.LISTENING,
                               modifier = Modifier.align(Alignment.BottomCenter)
-                          ) { if (!paused) startMic() }
+                          ) { if (!paused) onMicTap() }
                       }
                       Spacer(Modifier.height(4.dp))
 
                       VoskBanner(voskStatus, voskError, voskProgress)
                       Spacer(Modifier.height(4.dp))
 
-                      if (micListening) {
+                      if (state == Bus.State.LISTENING) {
                           Text(
-                              if (micPartial.isBlank()) "OUVINDO... fale agora" else micPartial,
-                              color = if (micPartial.isBlank()) NEON.copy(alpha = 0.6f) else GOLD,
+                              if (live.isBlank()) "OUVINDO... fale e pare 2 segundos"
+                              else live,
+                              color = if (live.isBlank()) NEON.copy(alpha = 0.6f) else GOLD,
                               fontSize = 13.sp, textAlign = TextAlign.Center
                           )
-                      } else if (micError.isNotEmpty()) {
-                          Text(micError, color = RED, fontSize = 11.sp, textAlign = TextAlign.Center)
+                          Text(
+                              "Toque no microfone de novo para enviar agora",
+                              color = NEON.copy(alpha = 0.5f), fontSize = 10.sp
+                          )
+                      } else if (micHint.isNotEmpty()) {
+                          Text(micHint, color = RED, fontSize = 11.sp, textAlign = TextAlign.Center)
                       }
                       Spacer(Modifier.height(4.dp))
 
@@ -2251,13 +2244,13 @@ jobs:
           @Composable
           private fun AiDialog(onClose: () -> Unit) {
               val ctx = LocalContext.current
-              val scope = rememberCoroutineScope()
               var selected by remember { mutableStateOf(AiTool.activeId(ctx) ?: "groq") }
               var key by remember { mutableStateOf(AiTool.getKey(ctx, selected)) }
               var model by remember { mutableStateOf(AiTool.getModel(ctx, selected)) }
               var testing by remember { mutableStateOf(false) }
               var errMsg by remember { mutableStateOf("") }
               var infoMsg by remember { mutableStateOf("") }
+              val scope = androidx.compose.runtime.rememberCoroutineScope()
 
               AlertDialog(
                   onDismissRequest = { if (!testing) onClose() },
@@ -2529,9 +2522,9 @@ jobs:
           }
           FIM_BOOT
 
-          echo "Projeto 4.9 gerado com sucesso."
+          echo "Projeto 5.0 gerado com sucesso."
 
-      - name: Embutir cerebro de voz (ZIP oficial, armazenado sem compressao)
+      - name: Embutir cerebro de voz (ZIP oficial, sem compressao)
         run: |
           mkdir -p app/src/main/assets
           curl -sL --retry 5 --retry-delay 3 -o app/src/main/assets/model-pt.zip "https://alphacephei.com/vosk/models/vosk-model-small-pt-0.3.zip"
@@ -2564,5 +2557,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ github.run_number }}
-          name: ATLAS 4.9 Modelo Flat - v${{ github.run_number }}
+          name: ATLAS 5.0 Pipeline Unica - v${{ github.run_number }}
           files: app/build/outputs/apk/debug/app-debug.apk
