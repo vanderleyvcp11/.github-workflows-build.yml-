@@ -54,7 +54,7 @@ jobs:
           FIM_ROOT
 
           cat > gradle.properties << 'FIM_PROPS'
-          org.gradle.jvmargs=-Xmx2048m
+          org.gradle.jvmargs=-Xmx3072m
           android.useAndroidX=true
           kotlin.code.style=official
           android.nonTransitiveRClass=true
@@ -72,8 +72,8 @@ jobs:
                   applicationId = "com.atlas.assistant"
                   minSdk = 26
                   targetSdk = 34
-                  versionCode = 15
-                  versionName = "4.3"
+                  versionCode = 16
+                  versionName = "4.4"
               }
               buildFeatures { compose = true }
               composeOptions { kotlinCompilerExtensionVersion = "1.5.8" }
@@ -180,34 +180,29 @@ jobs:
           import android.content.Context
           import kotlinx.coroutines.flow.MutableStateFlow
           import org.vosk.Model
-          import java.io.BufferedInputStream
           import java.io.File
           import java.io.FileOutputStream
-          import java.net.HttpURLConnection
-          import java.net.URL
-          import java.util.zip.ZipInputStream
 
+          /**
+           * Cerebro de voz VOSK embutido no APK (assets/model-pt).
+           * Nao existe download em runtime: apenas copia local dos assets.
+           */
           object VoskSpeech {
-              private const val MODEL_URL = "https://alphacephei.com/vosk/models/vosk-model-small-pt-0.3.zip"
-              private const val MODEL_DIR = "vosk-pt"
-              private const val ZIP_NAME = "vosk-pt.zip"
-              private const val MIN_ZIP_BYTES = 30L * 1024L * 1024L
 
+              /** -1 desconhecido, 0 nao preparado, 1 preparando, 2 pronto, 3 erro */
               val status = MutableStateFlow(-1)
-              val progress = MutableStateFlow(0)
-              val attempt = MutableStateFlow(0)
 
               @Volatile
               private var model: Model? = null
 
-              fun refresh(ctx: Context) {
-                  status.value = if (isReady(ctx)) 2 else 0
-              }
-
-              fun modelDir(ctx: Context): File = File(ctx.filesDir, MODEL_DIR)
+              fun modelDir(ctx: Context): File = File(ctx.filesDir, "model-pt")
 
               fun isReady(ctx: Context): Boolean =
                   File(modelDir(ctx), "am/final.mdl").exists()
+
+              fun refresh(ctx: Context) {
+                  status.value = if (isReady(ctx)) 2 else 0
+              }
 
               @Synchronized
               fun model(ctx: Context): Model {
@@ -217,81 +212,37 @@ jobs:
                   return m
               }
 
-              /** Download blindado: 3 tentativas, timeouts longos, verificacao de integridade. */
-              fun download(ctx: Context) {
-                  if (status.value == 1) return
+              /** Copia o modelo de dentro do APK para o armazenamento. Sem rede. */
+              fun unpack(ctx: Context) {
+                  val st = status.value
+                  if (st == 1 || st == 2) return
                   status.value = 1
                   Thread {
-                      val tmpZip = File(ctx.cacheDir, ZIP_NAME)
-                      var ok = false
-                      for (a in 1..3) {
-                          attempt.value = a
-                          progress.value = 0
-                          try {
-                              tmpZip.delete()
-                              val c = URL(MODEL_URL).openConnection() as HttpURLConnection
-                              c.connectTimeout = 30000
-                              c.readTimeout = 120000
-                              c.instanceFollowRedirects = true
-                              val total = c.contentLengthLong
-                              c.inputStream.use { raw ->
-                                  BufferedInputStream(raw, 131072).use { bis ->
-                                      FileOutputStream(tmpZip).use { out ->
-                                          val buf = ByteArray(131072)
-                                          var read: Int
-                                          var done = 0L
-                                          var last = System.currentTimeMillis()
-                                          while (bis.read(buf).also { read = it } != -1) {
-                                              out.write(buf, 0, read)
-                                              done += read
-                                              if (total > 0) progress.value = ((done * 100) / total).toInt()
-                                              last = System.currentTimeMillis()
-                                          }
-                                      }
-                                  }
-                              }
-                              if (tmpZip.length() >= MIN_ZIP_BYTES) {
-                                  progress.value = 99
-                                  unzip(tmpZip, ctx)
-                                  tmpZip.delete()
-                                  ok = isReady(ctx)
-                                  if (ok) break
-                              }
-                          } catch (_: Exception) {
+                      try {
+                          if (!isReady(ctx)) {
+                              modelDir(ctx).deleteRecursively()
+                              copyAssets(ctx, "model-pt", ctx.filesDir)
                           }
-                          if (a < 3) {
-                              try { Thread.sleep(3000) } catch (_: Exception) {}
-                          }
+                          status.value = if (isReady(ctx)) 2 else 3
+                      } catch (_: Exception) {
+                          status.value = 3
                       }
-                      tmpZip.delete()
-                      status.value = if (ok) 2 else 3
                   }.start()
               }
 
-              private fun unzip(zip: File, ctx: Context) {
-                  ZipInputStream(BufferedInputStream(zip.inputStream(), 131072)).use { zis ->
-                      var entry = zis.nextEntry
-                      var root: String? = null
-                      while (entry != null) {
-                          if (root == null && entry.name.contains("/")) {
-                              root = entry.name.substringBefore("/")
-                          }
-                          val out = File(ctx.filesDir, entry.name)
-                          if (entry.isDirectory) {
-                              out.mkdirs()
-                          } else {
-                              out.parentFile?.mkdirs()
-                              FileOutputStream(out).use { zis.copyTo(it) }
-                          }
-                          entry = zis.nextEntry
+              private fun copyAssets(ctx: Context, path: String, outRoot: File) {
+                  val assets = ctx.assets
+                  val children = assets.list(path) ?: return
+                  if (children.isEmpty()) {
+                      val dst = File(outRoot, path)
+                      dst.parentFile?.mkdirs()
+                      assets.open(path).use { input ->
+                          FileOutputStream(dst).use { input.copyTo(it) }
                       }
-                      if (root != null) {
-                          val src = File(ctx.filesDir, root)
-                          val dst = modelDir(ctx)
-                          if (src.exists() && src.absolutePath != dst.absolutePath) {
-                              if (dst.exists()) dst.deleteRecursively()
-                              src.renameTo(dst)
-                          }
+                  } else {
+                      File(outRoot, path).mkdirs()
+                      for (c in children) {
+                          copyAssets(ctx, "$path/$c", outRoot)
                       }
                   }
               }
@@ -1214,7 +1165,7 @@ jobs:
                       }
                   }
                   if (VoskSpeech.isReady(this)) startLoop()
-                  else updateNotification("Abra o app e instale o cerebro de voz (46MB).")
+                  else updateNotification("Abra o app e toque em PREPARAR CEREBRO DE VOZ.")
               }
 
               private fun buildNotification(): Notification {
@@ -1501,8 +1452,6 @@ jobs:
               var micError by remember { mutableStateOf("") }
               var micJob by remember { mutableStateOf<Job?>(null) }
               val voskStatus by VoskSpeech.status.collectAsState()
-              val voskProgress by VoskSpeech.progress.collectAsState()
-              val voskAttempt by VoskSpeech.attempt.collectAsState()
               val listState = rememberLazyListState()
               val scope = rememberCoroutineScope()
 
@@ -1514,7 +1463,7 @@ jobs:
 
               fun startMic() {
                   if (!VoskSpeech.isReady(ctx)) {
-                      micError = "Instale o CEREBRO DE VOZ no botao abaixo do reator."
+                      micError = "Toque em PREPARAR CEREBRO DE VOZ antes de falar."
                       return
                   }
                   if (micListening) {
@@ -1649,7 +1598,7 @@ jobs:
                       }
                       Spacer(Modifier.height(4.dp))
 
-                      VoskBanner(voskStatus, voskProgress, voskAttempt)
+                      VoskBanner(voskStatus)
                       Spacer(Modifier.height(4.dp))
 
                       if (micListening) {
@@ -1801,30 +1750,21 @@ jobs:
           }
 
           @Composable
-          private fun VoskBanner(status: Int, progress: Int, attempt: Int) {
+          private fun VoskBanner(status: Int) {
               val ctx = LocalContext.current
               when (status) {
                   2 -> Text("CEREBRO DE VOZ OFFLINE: ONLINE", color = GREEN, fontSize = 9.sp, letterSpacing = 2.sp)
                   1 -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                      Text("BAIXANDO CEREBRO DE VOZ: $progress%  (tentativa $attempt/3)", color = AMBER, fontSize = 10.sp)
-                      Box(
-                          Modifier.fillMaxWidth().height(5.dp).padding(horizontal = 20.dp)
-                              .background(NEON_DARK, RoundedCornerShape(3.dp))
-                      ) {
-                          Box(
-                              Modifier.fillMaxWidth((progress / 100f).coerceIn(0.02f, 1f))
-                                  .height(5.dp).background(NEON, RoundedCornerShape(3.dp))
-                          )
-                      }
-                      Text("Mantenha o app aberto e no Wi-Fi ate terminar.", color = NEON.copy(alpha = 0.6f), fontSize = 9.sp)
+                      Text("PREPARANDO CEREBRO DE VOZ...", color = AMBER, fontSize = 10.sp)
+                      Text("Copiando arquivos internos. Aguarde ate 1 minuto.", color = NEON.copy(alpha = 0.6f), fontSize = 9.sp)
                   }
                   else -> Button(
-                      onClick = { VoskSpeech.download(ctx) },
+                      onClick = { VoskSpeech.unpack(ctx) },
                       colors = ButtonDefaults.buttonColors(containerColor = NEON_DEEP)
                   ) {
                       Text(
-                          if (status == 3) "FALHOU — CONECTE NO WI-FI E TOQUE DE NOVO (46MB)"
-                          else "INSTALAR CEREBRO DE VOZ OFFLINE (46MB, uma vez)",
+                          if (status == 3) "ERRO — TOCAR PARA TENTAR DE NOVO"
+                          else "PREPARAR CEREBRO DE VOZ (1 toque, sem download)",
                           fontSize = 11.sp
                       )
                   }
@@ -2443,7 +2383,21 @@ jobs:
           }
           FIM_BOOT
 
-          echo "Projeto 4.3 gerado com sucesso."
+          echo "Projeto 4.4 gerado. Baixando modelo de voz (servidor do GitHub baixa em segundos)..."
+
+      - name: Embutir cerebro de voz no APK
+        run: |
+          mkdir -p app/src/main/assets
+          curl -sL --retry 5 --retry-delay 3 -o /tmp/vosk-pt.zip "https://alphacephei.com/vosk/models/vosk-model-small-pt-0.3.zip"
+          TAMANHO=$(stat -c%s /tmp/vosk-pt.zip)
+          echo "Modelo baixado: $TAMANHO bytes"
+          if [ "$TAMANHO" -lt 30000000 ]; then echo "ERRO: modelo incompleto"; exit 1; fi
+          cd app/src/main/assets
+          unzip -q /tmp/vosk-pt.zip
+          mv vosk-model-small-pt-0.3 model-pt
+          rm -f /tmp/vosk-pt.zip
+          ls model-pt
+          echo "Modelo embutido no APK com sucesso."
 
       - name: Compilar APK
         run: |
@@ -2469,5 +2423,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ github.run_number }}
-          name: ATLAS 4.3 Download Blindado - v${{ github.run_number }}
+          name: ATLAS 4.4 Tudo-Incluso - v${{ github.run_number }}
           files: app/build/outputs/apk/debug/app-debug.apk
