@@ -1389,3 +1389,1066 @@ jobs:
           import androidx.compose.material3.ButtonDefaults
           import androidx.compose.material3.OutlinedTextField
           import androidx.compose.material3.Text
+          import androidx.compose.material3.TextButton
+          import androidx.compose.runtime.Composable
+          import androidx.compose.runtime.DisposableEffect
+          import androidx.compose.runtime.LaunchedEffect
+          import androidx.compose.runtime.collectAsState
+          import androidx.compose.runtime.getValue
+          import androidx.compose.runtime.mutableStateOf
+          import androidx.compose.runtime.remember
+          import androidx.compose.runtime.rememberCoroutineScope
+          import androidx.compose.runtime.setValue
+          import androidx.compose.ui.Alignment
+          import androidx.compose.ui.Modifier
+          import androidx.compose.ui.geometry.CornerRadius
+          import androidx.compose.ui.geometry.Offset
+          import androidx.compose.ui.geometry.Size
+          import androidx.compose.ui.graphics.Brush
+          import androidx.compose.ui.graphics.Color
+          import androidx.compose.ui.graphics.Shadow
+          import androidx.compose.ui.graphics.StrokeCap
+          import androidx.compose.ui.graphics.drawscope.Stroke
+          import androidx.compose.ui.graphics.drawscope.rotate
+          import androidx.compose.ui.graphics.graphicsLayer
+          import androidx.compose.ui.platform.LocalContext
+          import androidx.compose.ui.text.TextStyle
+          import androidx.compose.ui.text.style.TextAlign
+          import androidx.compose.ui.unit.dp
+          import androidx.compose.ui.unit.sp
+          import kotlinx.coroutines.Dispatchers
+          import kotlinx.coroutines.Job
+          import kotlinx.coroutines.isActive
+          import kotlinx.coroutines.launch
+          import kotlinx.coroutines.delay
+          import kotlinx.coroutines.withContext
+          import org.json.JSONObject
+          import org.vosk.Recognizer
+          import java.text.SimpleDateFormat
+          import java.util.Date
+          import java.util.Locale
+          import kotlin.math.abs
+          import kotlin.math.cos
+          import kotlin.math.sin
+
+          private val NEON = Color(0xFF4FC3F7)
+          private val NEON_DEEP = Color(0xFF0B5E86)
+          private val NEON_DARK = Color(0xFF06364F)
+          private val RED = Color(0xFFE53935)
+          private val GOLD = Color(0xFFFFD166)
+          private val GREEN = Color(0xFF00E676)
+          private val AMBER = Color(0xFFFFB300)
+          private val BG = Color(0xFF01040A)
+          private val PANEL = Color(0xFF040D16)
+
+          @Composable
+          private fun PanelBox(content: @Composable () -> Unit) {
+              Box(
+                  Modifier
+                      .fillMaxWidth()
+                      .border(
+                          1.dp,
+                          Brush.horizontalGradient(
+                              listOf(
+                                  NEON_DEEP.copy(alpha = 0.25f),
+                                  NEON.copy(alpha = 0.55f),
+                                  NEON_DEEP.copy(alpha = 0.25f)
+                              )
+                          ),
+                          RoundedCornerShape(14.dp)
+                      )
+                      .background(PANEL, RoundedCornerShape(14.dp))
+                      .padding(8.dp)
+              ) { content() }
+          }
+
+          @Composable
+          fun HudScreen(onSend: (String) -> Unit) {
+              val ctx = LocalContext.current
+              val state by Bus.state.collectAsState()
+              val paused by Bus.paused.collectAsState()
+              val heard by Bus.heard.collectAsState()
+              val reply by Bus.reply.collectAsState()
+              val log by Bus.log.collectAsState()
+              var input by remember { mutableStateOf("") }
+              var showAi by remember { mutableStateOf(false) }
+              var showVoz by remember { mutableStateOf(false) }
+              var aiActive by remember { mutableStateOf(AiTool.activeId(ctx)) }
+              var aiOk by remember { mutableStateOf(AiTool.isConfigured(ctx) && AiTool.isTested(ctx)) }
+              var vozOk by remember { mutableStateOf(VoiceOutput.azureKey(ctx).isNotBlank()) }
+              var batt by remember { mutableStateOf(0.6f) }
+              var temp by remember { mutableStateOf(30f) }
+              var clock by remember { mutableStateOf("--:--:--") }
+              var micListening by remember { mutableStateOf(false) }
+              var micPartial by remember { mutableStateOf("") }
+              var micError by remember { mutableStateOf("") }
+              var micJob by remember { mutableStateOf<Job?>(null) }
+              val voskStatus by VoskSpeech.status.collectAsState()
+              val voskProgress by VoskSpeech.progress.collectAsState()
+              val listState = rememberLazyListState()
+              val scope = rememberCoroutineScope()
+
+              LaunchedEffect(Unit) { VoskSpeech.refresh(ctx) }
+
+              DisposableEffect(Unit) {
+                  onDispose { micJob?.cancel() }
+              }
+
+              fun startMic() {
+                  if (!VoskSpeech.isReady(ctx)) {
+                      micError = "Instale o CEREBRO DE VOZ no botao abaixo do reator."
+                      return
+                  }
+                  if (micListening) {
+                      micListening = false
+                      return
+                  }
+                  micError = ""
+                  micPartial = ""
+                  micListening = true
+                  micJob = scope.launch(Dispatchers.IO) {
+                      var audio: AudioRecord? = null
+                      var rec: Recognizer? = null
+                      var finalText = ""
+                      try {
+                          val sr = 16000
+                          val minBuf = AudioRecord.getMinBufferSize(
+                              sr, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT
+                          )
+                          audio = AudioRecord(
+                              MediaRecorder.AudioSource.MIC, sr,
+                              AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT,
+                              minBuf * 4
+                          )
+                          rec = Recognizer(VoskSpeech.model(ctx), sr.toFloat())
+                          audio.startRecording()
+                          val buf = ByteArray(8192)
+                          while (isActive && micListening) {
+                              val n = audio.read(buf, 0, buf.size)
+                              if (n <= 0) continue
+                              if (rec.acceptWaveForm(buf, n)) {
+                                  val t = JSONObject(rec.result).optString("text").trim()
+                                  if (t.isNotBlank()) finalText = t
+                              } else {
+                                  val p = JSONObject(rec.partialResult).optString("partial")
+                                  if (p.isNotBlank()) micPartial = p
+                              }
+                          }
+                          if (finalText.isBlank()) {
+                              try {
+                                  finalText = JSONObject(rec.finalResult).optString("text").trim()
+                              } catch (_: Exception) {}
+                          }
+                      } catch (e: Exception) {
+                          withContext(Dispatchers.Main) {
+                              micListening = false
+                              micError = "Erro de microfone: ${e.message}"
+                          }
+                      } finally {
+                          try { audio?.stop(); audio?.release() } catch (_: Exception) {}
+                          try { rec?.close() } catch (_: Exception) {}
+                      }
+                      withContext(Dispatchers.Main) {
+                          micListening = false
+                          val t = finalText.trim()
+                          if (t.isBlank()) {
+                              micError = "Nao ouvi nada. Toque e fale mais perto."
+                          } else {
+                              micPartial = t
+                              val pass = VoiceOutput.voicePass(ctx)
+                              if (pass.isNotBlank() && !t.lowercase().contains(pass.lowercase())) {
+                                  Bus.reply.value = "Comando de voz não autorizado, senhor. Diga a frase secreta."
+                                  VoiceOutput.speak(Bus.reply.value) {}
+                              } else {
+                                  onSend(t)
+                              }
+                          }
+                      }
+                  }
+              }
+
+              LaunchedEffect(Unit) {
+                  while (true) {
+                      val bm = ctx.getSystemService(Context.BATTERY_SERVICE) as BatteryManager
+                      val lvl = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
+                      if (lvl > 0) batt = lvl / 100f
+                      try {
+                          val stick = ctx.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+                          val tRaw = stick?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0) ?: 0
+                          if (tRaw > 0) temp = tRaw / 10f
+                      } catch (_: Exception) {}
+                      clock = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
+                      delay(1000)
+                  }
+              }
+              LaunchedEffect(log.size) { if (log.isNotEmpty()) listState.animateScrollToItem(0) }
+
+              Box(Modifier.fillMaxSize().background(BG)) {
+                  Starfield()
+                  Scanline()
+                  Column(
+                      Modifier.fillMaxSize()
+                          .verticalScroll(rememberScrollState())
+                          .padding(10.dp),
+                      horizontalAlignment = Alignment.CenterHorizontally
+                  ) {
+                      Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                          Column(Modifier.weight(1f)) {
+                              Text("ATLAS", style = TextStyle(
+                                  color = NEON, fontSize = 30.sp, letterSpacing = 12.sp,
+                                  shadow = Shadow(NEON, Offset.Zero, 16f)
+                              ))
+                              Text(
+                                  if (paused) "MODO DESCANSO" else statusText(state),
+                                  color = if (paused) AMBER else statusColor(state),
+                                  fontSize = 10.sp, letterSpacing = 3.sp
+                              )
+                          }
+                          Column(horizontalAlignment = Alignment.End) {
+                              Text(clock, color = NEON, fontSize = 18.sp, style = TextStyle(
+                                  shadow = Shadow(NEON_DEEP, Offset.Zero, 10f)
+                              ))
+                              Text("SISTEMA ONLINE", color = GREEN, fontSize = 9.sp, letterSpacing = 2.sp)
+                          }
+                      }
+                      Spacer(Modifier.height(8.dp))
+
+                      Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                          Box(Modifier.weight(1f)) { Gauge("BATERIA", batt, "${(batt * 100).toInt()}%") }
+                          Box(Modifier.weight(1f)) { Gauge("TEMP", (temp / 60f).coerceIn(0f, 1f), "${temp.toInt()}°C") }
+                      }
+                      Spacer(Modifier.height(6.dp))
+
+                      Box(Modifier.fillMaxWidth().height(280.dp), contentAlignment = Alignment.Center) {
+                          ReactorCore(
+                              Modifier.size(260.dp),
+                              active = !paused
+                          )
+                          MicButton(
+                              listening = micListening,
+                              modifier = Modifier.align(Alignment.BottomCenter)
+                          ) { if (!paused) startMic() }
+                      }
+                      Spacer(Modifier.height(4.dp))
+
+                      VoskBanner(voskStatus, voskProgress)
+                      Spacer(Modifier.height(4.dp))
+
+                      if (micListening) {
+                          Text(
+                              if (micPartial.isBlank()) "OUVINDO... fale agora" else micPartial,
+                              color = if (micPartial.isBlank()) NEON.copy(alpha = 0.6f) else GOLD,
+                              fontSize = 13.sp, textAlign = TextAlign.Center
+                          )
+                      } else if (micError.isNotEmpty()) {
+                          Text(micError, color = RED, fontSize = 11.sp, textAlign = TextAlign.Center)
+                      }
+                      Spacer(Modifier.height(4.dp))
+
+                      Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                          Box(Modifier.weight(1f)) { PanelBox { SpectrumPanel() } }
+                          Box(Modifier.weight(1f)) {
+                              PanelBox {
+                                  val aiLabel = AiTool.providers.firstOrNull { it.id == aiActive }?.label ?: "LOCAL"
+                                  Column {
+                                      StatusLine("[STATUS] SISTEMAS OK", 0)
+                                      StatusLine("[AUDIO] VOZ OFFLINE", 1)
+                                      StatusLine(
+                                          if (paused) "[MODO] DESCANSO" else "[MODO] ESCUTANDO",
+                                          2
+                                      )
+                                      StatusLine("[REDE] IA: $aiLabel${if (aiOk) " OK" else " PENDENTE"}", 3)
+                                      StatusLine("[DADOS] EM TEMPO REAL", 4)
+                                  }
+                              }
+                          }
+                      }
+                      Spacer(Modifier.height(6.dp))
+
+                      PanelBox {
+                          Column {
+                              Text(
+                                  heard.ifEmpty { "Aguardando comando..." },
+                                  color = NEON.copy(alpha = 0.85f), fontSize = 12.sp
+                              )
+                              Spacer(Modifier.height(3.dp))
+                              Text(
+                                  reply.ifEmpty { "ATLAS ONLINE. DIGA \"JARVIS\" OU TOQUE NO MICROFONE, SENHOR." },
+                                  color = GOLD, fontSize = 13.sp
+                              )
+                          }
+                      }
+                      Spacer(Modifier.height(6.dp))
+
+                      Box(Modifier.fillMaxWidth().height(130.dp)) {
+                          LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
+                              items(log.size) { i ->
+                                  val (u, a) = log[i]
+                                  Text("VOCE: $u", color = NEON, fontSize = 12.sp)
+                                  Text("ATLAS: $a", color = GOLD, fontSize = 12.sp)
+                                  Spacer(Modifier.height(5.dp))
+                              }
+                          }
+                      }
+                      Spacer(Modifier.height(6.dp))
+
+                      Row(verticalAlignment = Alignment.CenterVertically) {
+                          OutlinedTextField(
+                              value = input, onValueChange = { input = it },
+                              modifier = Modifier.weight(1f),
+                              placeholder = { Text("Digite um comando...", color = Color(0xFF3B4C5C), fontSize = 13.sp) }
+                          )
+                          Spacer(Modifier.width(8.dp))
+                          RoundButton("ENVIAR") {
+                              if (input.isNotBlank()) { onSend(input.trim()); input = "" }
+                          }
+                      }
+                      Spacer(Modifier.height(8.dp))
+
+                      Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                          Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                              RoundButton(if (paused) "ACORDAR" else "DESCANSO") {
+                                  val p = !Bus.paused.value
+                                  Bus.paused.value = p
+                                  if (p) VoiceOutput.stop()
+                              }
+                          }
+                          Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                              RoundButton("IA", highlight = aiOk) { showAi = true }
+                          }
+                          Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                              RoundButton("VOZ", highlight = vozOk) { showVoz = true }
+                          }
+                          Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                              RoundButton("TESTE") {
+                                  VoiceOutput.speak("ATLAS operacional em portugues. Todos os sistemas nominais, senhor.") {}
+                              }
+                          }
+                      }
+                  }
+              }
+
+              if (showAi) {
+                  AiDialog(onClose = {
+                      showAi = false
+                      aiOk = AiTool.isConfigured(ctx) && AiTool.isTested(ctx)
+                      aiActive = AiTool.activeId(ctx)
+                  })
+              }
+              if (showVoz) {
+                  VozDialog(onClose = {
+                      showVoz = false
+                      vozOk = VoiceOutput.azureKey(ctx).isNotBlank()
+                  })
+              }
+          }
+
+          @Composable
+          private fun Starfield() {
+              val t = rememberInfiniteTransition(label = "stars")
+              val drift by t.animateFloat(0f, 1f, infiniteRepeatable(tween(60000, easing = LinearEasing)), label = "drift")
+              val tw by t.animateFloat(0f, 1f, infiniteRepeatable(tween(5000, easing = LinearEasing)), label = "tw")
+              Canvas(Modifier.fillMaxSize()) {
+                  val n = 26
+                  for (i in 0 until n) {
+                      val fx = ((i * 137).toFloat() % 100f) / 100f
+                      val fy = ((i * 73 + 31).toFloat() % 100f) / 100f
+                      val x = ((fx * size.width + drift * size.width * 0.02f * (i % 3 - 1)) + size.width) % size.width
+                      val y = ((fy * size.height + drift * size.height * 0.01f * (i % 2)) + size.height) % size.height
+                      val a = 0.10f + 0.10f * (1 + sin(i * 2.1 + tw * 6.2831853f)) / 2f
+                      drawCircle(NEON.copy(alpha = a), radius = 1.2f + (i % 3) * 0.5f, center = Offset(x, y))
+                  }
+              }
+          }
+
+          @Composable
+          private fun Scanline() {
+              val t = rememberInfiniteTransition(label = "scan")
+              val y by t.animateFloat(0f, 1f, infiniteRepeatable(tween(9000, easing = LinearEasing)), label = "sy")
+              Canvas(Modifier.fillMaxSize()) {
+                  val yy = y * size.height
+                  val top = (yy - 60f).coerceAtLeast(0f)
+                  val bot = (yy + 60f).coerceAtMost(size.height)
+                  if (bot > top) {
+                      drawRect(
+                          Brush.verticalGradient(
+                              listOf(Color.Transparent, NEON.copy(alpha = 0.05f), Color.Transparent),
+                              startY = top, endY = bot
+                          ),
+                          topLeft = Offset(0f, top),
+                          size = Size(size.width, bot - top)
+                      )
+                  }
+              }
+          }
+
+          @Composable
+          private fun VoskBanner(status: Int, progress: Int) {
+              val ctx = LocalContext.current
+              when (status) {
+                  2 -> Text("CEREBRO DE VOZ OFFLINE: ONLINE", color = GREEN, fontSize = 9.sp, letterSpacing = 2.sp)
+                  1 -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                      Text("BAIXANDO CEREBRO DE VOZ: $progress%", color = AMBER, fontSize = 10.sp)
+                      Box(
+                          Modifier.fillMaxWidth().height(5.dp).padding(horizontal = 20.dp)
+                              .background(NEON_DARK, RoundedCornerShape(3.dp))
+                      ) {
+                          Box(
+                              Modifier.fillMaxWidth((progress / 100f).coerceIn(0.02f, 1f))
+                                  .height(5.dp).background(NEON, RoundedCornerShape(3.dp))
+                          )
+                      }
+                  }
+                  else -> Button(
+                      onClick = { VoskSpeech.download(ctx) },
+                      colors = ButtonDefaults.buttonColors(containerColor = NEON_DEEP)
+                  ) {
+                      Text(
+                          if (status == 3) "FALHOU — TOCAR PARA TENTAR DE NOVO (46MB)"
+                          else "INSTALAR CEREBRO DE VOZ OFFLINE (46MB, uma vez)",
+                          fontSize = 11.sp
+                      )
+                  }
+              }
+          }
+
+          private fun statusText(s: Bus.State) = when (s) {
+              Bus.State.IDLE -> "SISTEMA ATIVO"
+              Bus.State.LISTENING -> "OUVINDO..."
+              Bus.State.PROCESSING -> "PROCESSANDO..."
+              Bus.State.SPEAKING -> "RESPONDENDO..."
+          }
+
+          private fun statusColor(s: Bus.State) = when (s) {
+              Bus.State.IDLE -> GREEN
+              Bus.State.LISTENING -> NEON
+              Bus.State.PROCESSING -> AMBER
+              Bus.State.SPEAKING -> GREEN
+          }
+
+          @Composable
+          private fun MicButton(listening: Boolean, modifier: Modifier, onClick: () -> Unit) {
+              val t = rememberInfiniteTransition(label = "micb")
+              val pulse by t.animateFloat(
+                  0.92f, 1.08f,
+                  infiniteRepeatable(tween(500, easing = FastOutSlowInEasing), RepeatMode.Reverse),
+                  label = "mp2"
+              )
+              val rot by t.animateFloat(0f, 360f, infiniteRepeatable(tween(8000, easing = LinearEasing)), label = "mr2")
+              val scale = if (listening) pulse else 1f
+              Box(
+                  modifier
+                      .size(74.dp)
+                      .graphicsLayer { scaleX = scale; scaleY = scale }
+                      .border(2.dp, if (listening) RED else NEON, CircleShape)
+                      .background(BG, CircleShape)
+                      .clickable { onClick() },
+                  contentAlignment = Alignment.Center
+              ) {
+                  Canvas(Modifier.size(68.dp).graphicsLayer { rotationZ = rot }) {
+                      val r = size.minDimension / 2f - 2f
+                      val c = center
+                      if (listening) {
+                          drawCircle(
+                              Brush.radialGradient(
+                                  listOf(RED.copy(alpha = 0.25f), Color.Transparent),
+                                  center = c, radius = r
+                              ), r, c
+                          )
+                      }
+                      repeat(16) { i ->
+                          drawArc(
+                              (if (listening) RED else NEON).copy(alpha = 0.5f),
+                              i * 22.5f + 5f, 12f, false,
+                              topLeft = Offset(c.x - r, c.y - r), size = Size(r * 2, r * 2),
+                              style = Stroke(1.5f)
+                          )
+                      }
+                  }
+                  Canvas(Modifier.size(34.dp)) {
+                      val r = size.minDimension / 2f
+                      val c = center
+                      val bw = r * 0.42f
+                      drawRoundRect(
+                          if (listening) RED else NEON,
+                          topLeft = Offset(c.x - bw / 2f, c.y - r * 0.55f),
+                          size = Size(bw, r * 0.75f),
+                          cornerRadius = CornerRadius(bw / 2f, bw / 2f)
+                      )
+                      drawArc(
+                          if (listening) RED else NEON, 0f, 180f, false,
+                          topLeft = Offset(c.x - bw * 0.8f, c.y - r * 0.12f),
+                          size = Size(bw * 1.6f, bw * 1.6f), style = Stroke(3f)
+                      )
+                      drawLine(
+                          if (listening) RED else NEON,
+                          Offset(c.x, c.y + r * 0.35f), Offset(c.x, c.y + r * 0.62f), strokeWidth = 3f
+                      )
+                      drawLine(
+                          if (listening) RED else NEON,
+                          Offset(c.x - r * 0.30f, c.y + r * 0.62f), Offset(c.x + r * 0.30f, c.y + r * 0.62f), strokeWidth = 3f
+                      )
+                  }
+              }
+          }
+
+          @Composable
+          private fun Gauge(label: String, value: Float, text: String) {
+              val p by animateFloatAsState(targetValue = value, tween(900), label = "g")
+              val pulse by rememberInfiniteTransition(label = "gp").animateFloat(
+                  0.85f, 1f,
+                  infiniteRepeatable(tween(1400, easing = FastOutSlowInEasing), RepeatMode.Reverse),
+                  label = "gpl"
+              )
+              Box(Modifier.fillMaxWidth().height(110.dp), contentAlignment = Alignment.Center) {
+                  Canvas(Modifier.size(104.dp).graphicsLayer { scaleX = pulse; scaleY = pulse }) {
+                      val r = size.minDimension / 2f - 6f
+                      val c = center
+                      val start = 135f
+                      val sweep = 270f
+                      drawArc(NEON_DARK.copy(alpha = 0.8f), start, sweep, false,
+                          topLeft = Offset(c.x - r, c.y - r), size = Size(r * 2, r * 2),
+                          style = Stroke(9f, cap = StrokeCap.Round))
+                      drawArc(NEON, start, sweep * p, false,
+                          topLeft = Offset(c.x - r, c.y - r), size = Size(r * 2, r * 2),
+                          style = Stroke(9f, cap = StrokeCap.Round))
+                      drawArc(RED.copy(alpha = 0.9f), start + sweep * p,
+                          (sweep * (1f - p)).coerceAtLeast(2f), false,
+                          topLeft = Offset(c.x - r, c.y - r), size = Size(r * 2, r * 2),
+                          style = Stroke(9f, cap = StrokeCap.Round))
+                  }
+                  Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                      Text(text, color = NEON, fontSize = 17.sp, style = TextStyle(
+                          shadow = Shadow(NEON_DEEP, Offset.Zero, 8f)))
+                      Text(label, color = NEON.copy(alpha = 0.6f), fontSize = 9.sp, letterSpacing = 2.sp)
+                  }
+              }
+          }
+
+          @Composable
+          private fun ReactorCore(modifier: Modifier, active: Boolean) {
+              val t1 = rememberInfiniteTransition(label = "r1")
+              val slow by t1.animateFloat(0f, 360f, infiniteRepeatable(tween(30000, easing = LinearEasing)), label = "s1")
+              val slow2 by t1.animateFloat(360f, 0f, infiniteRepeatable(tween(42000, easing = LinearEasing)), label = "s6")
+              val mid by t1.animateFloat(360f, 0f, infiniteRepeatable(tween(20000, easing = LinearEasing)), label = "s2")
+              val fast by t1.animateFloat(0f, 360f, infiniteRepeatable(tween(9000, easing = LinearEasing)), label = "s3")
+              val sweepA by t1.animateFloat(0f, 360f, infiniteRepeatable(tween(5000, easing = LinearEasing)), label = "s4")
+              val sweepB by t1.animateFloat(360f, 0f, infiniteRepeatable(tween(7000, easing = LinearEasing)), label = "s7")
+              val core by t1.animateFloat(0.55f, 1f, infiniteRepeatable(tween(1600, easing = FastOutSlowInEasing), RepeatMode.Reverse), label = "s5")
+              val breath by t1.animateFloat(0.75f, 1f, infiniteRepeatable(tween(3200, easing = FastOutSlowInEasing), RepeatMode.Reverse), label = "s8")
+
+              Canvas(modifier) {
+                  val r = size.minDimension / 2f
+                  val c = center
+                  drawCircle(
+                      Brush.radialGradient(
+                          listOf(NEON.copy(alpha = 0.10f * breath), Color.Transparent),
+                          center = c, radius = r
+                      ), r, c
+                  )
+                  rotate(slow, pivot = c) {
+                      repeat(60) { i ->
+                          val a = i * 6f
+                          val len = if (i % 5 == 0) 10f else 5f
+                          drawLine(
+                              NEON.copy(alpha = 0.75f),
+                              Offset(c.x + cos(Math.toRadians(a.toDouble())).toFloat() * (r - len),
+                                  c.y + sin(Math.toRadians(a.toDouble())).toFloat() * (r - len)),
+                              Offset(c.x + cos(Math.toRadians(a.toDouble())).toFloat() * r,
+                                  c.y + sin(Math.toRadians(a.toDouble())).toFloat() * r),
+                              strokeWidth = if (i % 5 == 0) 2.4f else 1.4f
+                          )
+                      }
+                  }
+                  rotate(slow2, pivot = c) {
+                      repeat(48) { i ->
+                          val a = i * 7.5f
+                          drawLine(
+                              NEON.copy(alpha = 0.30f),
+                              Offset(c.x + cos(Math.toRadians(a.toDouble())).toFloat() * r * 0.90f,
+                                  c.y + sin(Math.toRadians(a.toDouble())).toFloat() * r * 0.90f),
+                              Offset(c.x + cos(Math.toRadians(a.toDouble())).toFloat() * r * 0.95f,
+                                  c.y + sin(Math.toRadians(a.toDouble())).toFloat() * r * 0.95f),
+                              strokeWidth = 1f
+                          )
+                      }
+                  }
+                  drawCircle(NEON.copy(alpha = 0.5f), radius = r * 0.86f, center = c, style = Stroke(1.6f))
+                  drawCircle(NEON_DEEP.copy(alpha = 0.5f), radius = r * 0.80f, center = c, style = Stroke(5f))
+                  rotate(mid, pivot = c) {
+                      repeat(24) { i ->
+                          drawArc(NEON.copy(alpha = 0.6f), i * 15f + 4f, 8f, false,
+                              topLeft = Offset(c.x - r * 0.70f, c.y - r * 0.70f),
+                              size = Size(r * 1.4f, r * 1.4f), style = Stroke(7f))
+                      }
+                  }
+                  drawCircle(NEON.copy(alpha = 0.35f), radius = r * 0.56f, center = c, style = Stroke(1.4f))
+                  rotate(slow, pivot = c) {
+                      repeat(6) { i ->
+                          val a = i * 60f
+                          drawLine(
+                              NEON.copy(alpha = 0.25f * breath),
+                              Offset(c.x + cos(Math.toRadians(a.toDouble())).toFloat() * r * 0.34f,
+                                  c.y + sin(Math.toRadians(a.toDouble())).toFloat() * r * 0.34f),
+                              Offset(c.x + cos(Math.toRadians(a.toDouble())).toFloat() * r * 0.54f,
+                                  c.y + sin(Math.toRadians(a.toDouble())).toFloat() * r * 0.54f),
+                              strokeWidth = 1.5f
+                          )
+                      }
+                  }
+                  rotate(fast, pivot = c) {
+                      repeat(12) { i ->
+                          drawArc(NEON.copy(alpha = 0.8f), i * 30f + 6f, 14f, false,
+                              topLeft = Offset(c.x - r * 0.46f, c.y - r * 0.46f),
+                              size = Size(r * 0.92f, r * 0.92f), style = Stroke(4f))
+                      }
+                  }
+                  rotate(sweepA, pivot = c) {
+                      drawArc(
+                          Brush.sweepGradient(listOf(NEON.copy(alpha = 0.30f), Color.Transparent), center = c),
+                          0f, 100f, true,
+                          topLeft = Offset(c.x - r * 0.54f, c.y - r * 0.54f),
+                          size = Size(r * 1.08f, r * 1.08f)
+                      )
+                  }
+                  rotate(sweepB, pivot = c) {
+                      drawArc(
+                          Brush.sweepGradient(listOf(Color.White.copy(alpha = 0.18f), Color.Transparent), center = c),
+                          0f, 55f, true,
+                          topLeft = Offset(c.x - r * 0.30f, c.y - r * 0.30f),
+                          size = Size(r * 0.60f, r * 0.60f)
+                      )
+                  }
+                  val glow = if (active) core else core * 0.4f
+                  drawCircle(Brush.radialGradient(
+                      listOf(Color.White.copy(alpha = 0.95f * glow), NEON.copy(alpha = 0.8f * glow), Color.Transparent),
+                      center = c, radius = r * 0.34f), radius = r * 0.34f, center = c)
+                  drawCircle(NEON.copy(alpha = glow), radius = r * 0.22f, center = c, style = Stroke(2.5f))
+                  drawCircle(Color.White, radius = 2.5f, center = c)
+                  val tri = androidx.compose.ui.graphics.Path().apply {
+                      moveTo(c.x, c.y - r * 0.10f)
+                      lineTo(c.x + r * 0.09f, c.y + r * 0.06f)
+                      lineTo(c.x - r * 0.09f, c.y + r * 0.06f)
+                      close()
+                  }
+                  drawPath(tri, Color.White.copy(alpha = 0.9f * glow))
+              }
+          }
+
+          @Composable
+          private fun SpectrumPanel() {
+              val t = rememberInfiniteTransition(label = "spec")
+              val phase by t.animateFloat(0f, 6.2831853f, infiniteRepeatable(tween(3200, easing = LinearEasing)), label = "ph")
+              Column {
+                  Text("DIAGNOSTICO DE SISTEMA", color = NEON.copy(alpha = 0.6f), fontSize = 9.sp, letterSpacing = 1.sp)
+                  Spacer(Modifier.height(6.dp))
+                  Canvas(Modifier.fillMaxWidth().height(64.dp)) {
+                      val n = 12
+                      val gap = 4f
+                      val bw = (size.width - gap * (n - 1)) / n
+                      for (i in 0 until n) {
+                          val h = size.height * (0.15f + 0.8f * abs(
+                              sin(i * 0.9 + phase * 4.0).toFloat() * cos(i * 1.7 + phase * 2.3).toFloat()
+                          ))
+                          drawRoundRect(
+                              Brush.verticalGradient(
+                                  listOf(NEON, NEON_DEEP),
+                                  startY = size.height - h, endY = size.height
+                              ),
+                              topLeft = Offset(i * (bw + gap), size.height - h),
+                              size = Size(bw, h),
+                              cornerRadius = CornerRadius(3f, 3f)
+                          )
+                          drawRoundRect(
+                              Color.White.copy(alpha = 0.7f),
+                              topLeft = Offset(i * (bw + gap), size.height - h),
+                              size = Size(bw, 2.5f),
+                              cornerRadius = CornerRadius(1.5f, 1.5f)
+                          )
+                      }
+                  }
+                  Spacer(Modifier.height(6.dp))
+                  LoaderRow("NUCLEO", (abs(sin(phase * 2.0).toFloat()) * 0.7f + 0.3f))
+                  LoaderRow("REDE", (abs(cos(phase * 1.4).toFloat()) * 0.7f + 0.3f))
+              }
+          }
+
+          @Composable
+          private fun LoaderRow(label: String, frac: Float) {
+              Row(verticalAlignment = Alignment.CenterVertically) {
+                  Text(label, color = NEON.copy(alpha = 0.5f), fontSize = 8.sp, modifier = Modifier.width(46.dp))
+                  Box(
+                      Modifier
+                          .weight(1f)
+                          .height(3.dp)
+                          .background(NEON_DARK, RoundedCornerShape(2.dp))
+                  ) {
+                      Box(
+                          Modifier
+                              .fillMaxWidth(frac.coerceIn(0.05f, 1f))
+                              .height(3.dp)
+                              .background(NEON, RoundedCornerShape(2.dp))
+                      )
+                  }
+              }
+          }
+
+          @Composable
+          private fun StatusLine(text: String, index: Int) {
+              val t = rememberInfiniteTransition(label = "sl$index")
+              val dot by t.animateFloat(
+                  0.35f, 1f,
+                  infiniteRepeatable(tween(1200 + index * 150, easing = FastOutSlowInEasing), RepeatMode.Reverse),
+                  label = "d$index"
+              )
+              Row(verticalAlignment = Alignment.CenterVertically) {
+                  Canvas(Modifier.size(6.dp)) {
+                      drawCircle(GREEN.copy(alpha = dot), radius = size.minDimension / 2f)
+                  }
+                  Spacer(Modifier.width(5.dp))
+                  Text(text, color = NEON.copy(alpha = 0.85f), fontSize = 9.sp, letterSpacing = 0.5.sp)
+              }
+          }
+
+          @Composable
+          private fun RoundButton(label: String, highlight: Boolean = false, onClick: () -> Unit) {
+              val t = rememberInfiniteTransition(label = "rb$label")
+              val rot by t.animateFloat(0f, 360f, infiniteRepeatable(tween(10000, easing = LinearEasing)), label = "rbr")
+              val glow by t.animateFloat(0.6f, 1f, infiniteRepeatable(tween(1500, easing = FastOutSlowInEasing), RepeatMode.Reverse), label = "rbg")
+              Box(
+                  Modifier
+                      .size(62.dp)
+                      .border(1.5.dp, if (highlight) RED else NEON.copy(alpha = 0.5f * glow), CircleShape)
+                      .background(PANEL, CircleShape)
+                      .clickable { onClick() },
+                  contentAlignment = Alignment.Center
+              ) {
+                  Canvas(Modifier.size(58.dp).graphicsLayer { rotationZ = rot }) {
+                      val r = size.minDimension / 2f - 2f
+                      val c = center
+                      repeat(12) { i ->
+                          drawArc(
+                              if (highlight) RED.copy(alpha = 0.65f) else NEON.copy(alpha = 0.55f),
+                              i * 30f + 5f, 14f, false,
+                              topLeft = Offset(c.x - r, c.y - r), size = Size(r * 2, r * 2),
+                              style = Stroke(1.6f)
+                          )
+                      }
+                  }
+                  Text(
+                      label,
+                      color = if (highlight) RED else NEON,
+                      fontSize = 9.sp, letterSpacing = 0.5.sp, textAlign = TextAlign.Center
+                  )
+              }
+          }
+
+          @Composable
+          private fun AiDialog(onClose: () -> Unit) {
+              val ctx = LocalContext.current
+              val scope = rememberCoroutineScope()
+              var selected by remember { mutableStateOf(AiTool.activeId(ctx) ?: "groq") }
+              var key by remember { mutableStateOf(AiTool.getKey(ctx, selected)) }
+              var model by remember { mutableStateOf(AiTool.getModel(ctx, selected)) }
+              var testing by remember { mutableStateOf(false) }
+              var errMsg by remember { mutableStateOf("") }
+              var infoMsg by remember { mutableStateOf("") }
+
+              AlertDialog(
+                  onDismissRequest = { if (!testing) onClose() },
+                  confirmButton = {
+                      TextButton(
+                          enabled = !testing,
+                          onClick = {
+                              AiTool.save(ctx, selected, key.trim(), model.trim())
+                              testing = true
+                              errMsg = ""
+                              infoMsg = ""
+                              scope.launch {
+                                  val r = AiTool.ask(ctx, "Diga: teste concluido.")
+                                  if (r.ok) {
+                                      AiTool.setTested(ctx, true)
+                                      onClose()
+                                  } else {
+                                      errMsg = r.text
+                                      infoMsg = "Se for modelo antigo, o ATLAS tentou se auto-reparar. Toque em SALVAR E TESTAR de novo."
+                                      testing = false
+                                  }
+                              }
+                          }
+                      ) { Text(if (testing) "TESTANDO..." else "SALVAR E TESTAR") }
+                  },
+                  dismissButton = {
+                      TextButton(enabled = !testing, onClick = onClose) { Text("FECHAR") }
+                  },
+                  title = { Text("IA DO ATLAS", color = NEON, fontSize = 18.sp) },
+                  text = {
+                      Column {
+                          Text(
+                              "1. Toque GROQ.  2. Cole a chave (comeca com gsk_).  " +
+                              "3. SALVAR E TESTAR. Se passar, o botao IA fica VERMELHO.",
+                              color = Color(0xFF9FB3C8), fontSize = 12.sp
+                          )
+                          Spacer(Modifier.height(10.dp))
+                          Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                              AiTool.providers.forEach { p ->
+                                  Button(
+                                      onClick = {
+                                          selected = p.id
+                                          key = AiTool.getKey(ctx, p.id)
+                                          model = AiTool.getModel(ctx, p.id)
+                                      },
+                                      colors = if (selected == p.id)
+                                          ButtonDefaults.buttonColors(containerColor = NEON_DEEP)
+                                      else ButtonDefaults.buttonColors(containerColor = Color(0xFF0E3A4D)),
+                                      contentPadding = androidx.compose.foundation.layout.PaddingValues(6.dp)
+                                  ) { Text(p.label, fontSize = 10.sp) }
+                              }
+                          }
+                          Spacer(Modifier.height(10.dp))
+                          OutlinedTextField(
+                              value = key, onValueChange = { key = it },
+                              label = { Text("Chave de API (gsk_...)") },
+                              modifier = Modifier.fillMaxWidth()
+                          )
+                          Spacer(Modifier.height(6.dp))
+                          OutlinedTextField(
+                              value = model, onValueChange = { model = it },
+                              label = { Text("Modelo (se der 404, ele troca sozinho)") },
+                              modifier = Modifier.fillMaxWidth()
+                          )
+                          if (errMsg.isNotEmpty()) {
+                              Spacer(Modifier.height(8.dp))
+                              Text("ERRO: $errMsg", color = RED, fontSize = 12.sp)
+                              Text(infoMsg, color = Color(0xFF9FB3C8), fontSize = 11.sp)
+                          }
+                      }
+                  }
+              )
+          }
+
+          @Composable
+          private fun VozDialog(onClose: () -> Unit) {
+              val ctx = LocalContext.current
+              var key by remember { mutableStateOf(VoiceOutput.azureKey(ctx)) }
+              var region by remember { mutableStateOf(VoiceOutput.azureRegion(ctx)) }
+              var voice by remember { mutableStateOf(VoiceOutput.azureVoice(ctx)) }
+              var pass by remember { mutableStateOf(VoiceOutput.voicePass(ctx)) }
+              var bgOn by remember { mutableStateOf(VoiceOutput.bgListen(ctx)) }
+
+              AlertDialog(
+                  onDismissRequest = onClose,
+                  confirmButton = {
+                      TextButton(onClick = {
+                          VoiceOutput.saveAzure(ctx, key, region, voice)
+                          VoiceOutput.saveVoicePass(ctx, pass)
+                          onClose()
+                          VoiceOutput.speak("Configuracoes de voz salvas. Estou a suas ordens, senhor.") {}
+                      }) { Text("SALVAR E TESTAR") }
+                  },
+                  dismissButton = { TextButton(onClick = onClose) { Text("FECHAR") } },
+                  title = { Text("VOZ DO ATLAS", color = NEON, fontSize = 18.sp) },
+                  text = {
+                      Column {
+                          Text(
+                              "Voz de cinema: chave gratuita em portal.azure.com (Speech, plano F0, regiao eastus).",
+                              color = Color(0xFF9FB3C8), fontSize = 12.sp
+                          )
+                          Spacer(Modifier.height(10.dp))
+                          Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                              VoiceOutput.vozes.forEach { v ->
+                                  Button(
+                                      onClick = { voice = v.id },
+                                      colors = if (voice == v.id)
+                                          ButtonDefaults.buttonColors(containerColor = NEON_DEEP)
+                                      else ButtonDefaults.buttonColors(containerColor = Color(0xFF0E3A4D)),
+                                      contentPadding = androidx.compose.foundation.layout.PaddingValues(6.dp)
+                                  ) { Text(v.label, fontSize = 9.sp) }
+                              }
+                          }
+                          Spacer(Modifier.height(10.dp))
+                          OutlinedTextField(
+                              value = key, onValueChange = { key = it },
+                              label = { Text("Chave Azure (opcional)") },
+                              modifier = Modifier.fillMaxWidth()
+                          )
+                          Spacer(Modifier.height(6.dp))
+                          OutlinedTextField(
+                              value = region, onValueChange = { region = it },
+                              label = { Text("Regiao (ex: eastus)") },
+                              modifier = Modifier.fillMaxWidth()
+                          )
+                          Spacer(Modifier.height(10.dp))
+                          Text("SEGURANCA DE VOZ", color = NEON, fontSize = 12.sp)
+                          OutlinedTextField(
+                              value = pass, onValueChange = { pass = it },
+                              label = { Text("Frase secreta (opcional)") },
+                              modifier = Modifier.fillMaxWidth()
+                          )
+                          Text(
+                              "Com frase: comando de voz so executa se contiver a frase.",
+                              color = Color(0xFF9FB3C8), fontSize = 10.sp
+                          )
+                          Spacer(Modifier.height(8.dp))
+                          Button(
+                              onClick = {
+                                  bgOn = !bgOn
+                                  VoiceOutput.saveBgListen(ctx, bgOn)
+                              },
+                              colors = ButtonDefaults.buttonColors(
+                                  containerColor = if (bgOn) NEON_DEEP else Color(0xFF0E3A4D)
+                              ),
+                              modifier = Modifier.fillMaxWidth()
+                          ) {
+                              Text(
+                                  if (bgOn) "JARVIS DE FUNDO: LIGADO (oficial)"
+                                  else "JARVIS DE FUNDO: DESLIGADO",
+                                  fontSize = 11.sp
+                              )
+                          }
+                          Text(
+                              "Ligado: diga \"Jarvis, que horas sao\" em qualquer tela (offline).",
+                              color = Color(0xFF9FB3C8), fontSize = 10.sp
+                          )
+                      }
+                  }
+              )
+          }
+
+          @Composable
+          fun PermissionGate(onRequest: () -> Unit) {
+              Column(
+                  Modifier.fillMaxSize().background(BG).padding(32.dp),
+                  Arrangement.Center, Alignment.CenterHorizontally
+              ) {
+                  Text("ATLAS", color = NEON, fontSize = 42.sp, letterSpacing = 10.sp)
+                  Spacer(Modifier.height(12.dp))
+                  Text("Conceda acesso ao microfone para ativar o despertar por voz.",
+                      color = Color.White, textAlign = TextAlign.Center)
+                  Spacer(Modifier.height(24.dp))
+                  Button(onClick = onRequest) { Text("CONCEDER PERMISSOES") }
+              }
+          }
+          FIM_HUD
+
+          cat > app/src/main/java/com/atlas/assistant/MainActivity.kt << 'FIM_MAIN'
+          package com.atlas.assistant
+
+          import android.Manifest
+          import android.content.Intent
+          import android.content.pm.PackageManager
+          import android.os.Build
+          import android.os.Bundle
+          import androidx.activity.ComponentActivity
+          import androidx.activity.compose.setContent
+          import androidx.activity.result.contract.ActivityResultContracts
+          import androidx.compose.material3.MaterialTheme
+          import androidx.compose.material3.darkColorScheme
+          import androidx.compose.runtime.getValue
+          import androidx.compose.runtime.mutableStateOf
+          import androidx.compose.runtime.setValue
+          import androidx.compose.ui.graphics.Color
+          import androidx.core.content.ContextCompat
+
+          class MainActivity : ComponentActivity() {
+
+              private var micGranted by mutableStateOf(false)
+              private var pendingPerms: Array<String> = emptyArray()
+
+              private val launcher = registerForActivityResult(
+                  ActivityResultContracts.RequestMultiplePermissions()
+              ) { result ->
+                  micGranted = result[Manifest.permission.RECORD_AUDIO] == true
+                  if (micGranted) startAtlas()
+              }
+
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  Atlas.appCtx = applicationContext
+
+                  val wanted = mutableListOf(
+                      Manifest.permission.RECORD_AUDIO,
+                      Manifest.permission.CALL_PHONE,
+                      Manifest.permission.READ_CONTACTS
+                  )
+                  if (Build.VERSION.SDK_INT >= 33) {
+                      wanted += Manifest.permission.POST_NOTIFICATIONS
+                      wanted += Manifest.permission.READ_MEDIA_AUDIO
+                  } else {
+                      wanted += Manifest.permission.READ_EXTERNAL_STORAGE
+                  }
+                  pendingPerms = wanted.filter {
+                      ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+                  }.toTypedArray()
+                  micGranted = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
+                          PackageManager.PERMISSION_GRANTED
+
+                  if (micGranted) startAtlas() else launcher.launch(pendingPerms)
+
+                  setContent {
+                      MaterialTheme(colorScheme = darkColorScheme(background = Color(0xFF01040A))) {
+                          if (micGranted) HudScreen(onSend = { Atlas.ask(it) })
+                          else PermissionGate { launcher.launch(pendingPerms) }
+                      }
+                  }
+              }
+
+              private fun startAtlas() {
+                  VoiceOutput.init(this)
+                  ContextCompat.startForegroundService(this, Intent(this, AtlasService::class.java))
+              }
+          }
+          FIM_MAIN
+
+          cat > app/src/main/java/com/atlas/assistant/BootReceiver.kt << 'FIM_BOOT'
+          package com.atlas.assistant
+
+          import android.Manifest
+          import android.content.BroadcastReceiver
+          import android.content.Context
+          import android.content.Intent
+          import android.content.pm.PackageManager
+          import androidx.core.content.ContextCompat
+
+          class BootReceiver : BroadcastReceiver() {
+              override fun onReceive(context: Context, intent: Intent) {
+                  if (intent.action == Intent.ACTION_BOOT_COMPLETED &&
+                      ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+                      PackageManager.PERMISSION_GRANTED
+                  ) {
+                      try {
+                          ContextCompat.startForegroundService(context, Intent(context, AtlasService::class.java))
+                      } catch (_: Exception) {}
+                  }
+              }
+          }
+          FIM_BOOT
+
+          echo "Projeto 4.1 gerado com sucesso."
+
+      - name: Compilar APK
+        run: |
+          set -o pipefail
+          gradle assembleDebug --no-daemon 2>&1 | tee /tmp/build.log
+
+      - name: Diagnostico no resumo (aparece se falhar)
+        if: failure()
+        run: |
+          {
+            echo "### Diagnostico da falha (raio-X):"
+            echo ""
+            grep -nE "^e: |error: |FAILURE:|What went wrong" /tmp/build.log | head -40
+          } >> "$GITHUB_STEP_SUMMARY" || true
+
+      - name: Publicar artefato (download via login)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ATLAS-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Publicar Release (link direto, sem login)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ github.run_number }}
+          name: ATLAS 4.1 Cinema - v${{ github.run_number }}
+          files: app/build/outputs/apk/debug/app-debug.apk
