@@ -72,8 +72,8 @@ jobs:
                   applicationId = "com.atlas.assistant"
                   minSdk = 26
                   targetSdk = 34
-                  versionCode = 17
-                  versionName = "4.5"
+                  versionCode = 18
+                  versionName = "4.6"
               }
               buildFeatures { compose = true }
               composeOptions { kotlinCompilerExtensionVersion = "1.5.8" }
@@ -186,14 +186,14 @@ jobs:
           import java.util.zip.ZipInputStream
 
           /**
-           * Metodo OFICIAL do Vosk: um unico ZIP embutido no APK,
-           * extraido no primeiro uso. A prova de quirks de OEM.
+           * Extracao a prova de estrutura: descompacta o ZIP como vem,
+           * varre ate achar a pasta que contem am/final.mdl e a posiciona.
            */
           object VoskSpeech {
 
-              /** -1 desconhecido, 0 nao preparado, 1 preparando, 2 pronto, 3 erro */
               val status = MutableStateFlow(-1)
               val errorMsg = MutableStateFlow("")
+              val progress = MutableStateFlow(0)
 
               @Volatile
               private var model: Model? = null
@@ -224,38 +224,71 @@ jobs:
                       try {
                           if (!isReady(ctx)) {
                               modelDir(ctx).deleteRecursively()
-                              modelDir(ctx).mkdirs()
-                              val zis = ZipInputStream(
-                                  BufferedInputStream(ctx.assets.open("model-pt.zip"), 262144)
-                              )
-                              var entry = zis.nextEntry
+                              val tmp = File(ctx.filesDir, "vosk-extract-tmp")
+                              tmp.deleteRecursively()
+                              tmp.mkdirs()
                               var count = 0
-                              while (entry != null) {
-                                  if (!entry.isDirectory) {
-                                      var name = entry.name
-                                      if (name.startsWith("vosk-model")) {
-                                          name = name.substringAfter('/')
-                                      }
-                                      if (name.isNotBlank() && !name.endsWith("/")) {
-                                          val out = File(modelDir(ctx), name)
+                              ZipInputStream(
+                                  BufferedInputStream(ctx.assets.open("model-pt.zip"), 262144)
+                              ).use { zis ->
+                                  var entry = zis.nextEntry
+                                  while (entry != null) {
+                                      if (!entry.isDirectory) {
+                                          val out = File(tmp, entry.name)
                                           out.parentFile?.mkdirs()
                                           FileOutputStream(out).use { zis.copyTo(it, 262144) }
                                           count++
                                       }
+                                      entry = zis.nextEntry
                                   }
-                                  entry = zis.nextEntry
                               }
-                              zis.close()
+                              progress.value = 60
+                              val root = findModelRoot(tmp)
+                              if (root == null) {
+                                  val sample = tmp.listFiles()
+                                      ?.take(3)
+                                      ?.joinToString(", ") { it.name }
+                                      ?: "(vazio)"
+                                  tmp.deleteRecursively()
+                                  throw RuntimeException(
+                                      "estrutura inesperada ($count arquivos, raiz: $sample)"
+                                  )
+                              }
+                              progress.value = 90
+                              if (!root.renameTo(modelDir(ctx))) {
+                                  root.copyRecursively(modelDir(ctx), overwrite = true)
+                                  root.deleteRecursively()
+                              }
+                              tmp.deleteRecursively()
+                              progress.value = 100
                           }
                           status.value = if (isReady(ctx)) 2 else 3
                           if (status.value == 3) {
-                              errorMsg.value = "O pacote interno nao contem o arquivo esperado."
+                              errorMsg.value = "verificacao final falhou"
                           }
                       } catch (e: Throwable) {
                           status.value = 3
                           errorMsg.value = e.message ?: e.javaClass.simpleName
                       }
                   }.start()
+              }
+
+              /** Procura em largura a pasta que contem am/final.mdl. */
+              private fun findModelRoot(base: File): File? {
+                  if (File(base, "am/final.mdl").exists()) return base
+                  val queue = ArrayDeque<File>()
+                  queue.add(base)
+                  while (queue.isNotEmpty()) {
+                      val d = queue.removeFirst()
+                      val subs = d.listFiles() ?: continue
+                      for (f in subs) {
+                          if (f.isDirectory) {
+                              if (File(f, "am/final.mdl").exists()) return f
+                              queue.add(f)
+                          }
+                      }
+                  }
+                  return null
               }
           }
           FIM_VOSK
@@ -1464,6 +1497,7 @@ jobs:
               var micJob by remember { mutableStateOf<Job?>(null) }
               val voskStatus by VoskSpeech.status.collectAsState()
               val voskError by VoskSpeech.errorMsg.collectAsState()
+              val voskProgress by VoskSpeech.progress.collectAsState()
               val listState = rememberLazyListState()
               val scope = rememberCoroutineScope()
 
@@ -1610,7 +1644,7 @@ jobs:
                       }
                       Spacer(Modifier.height(4.dp))
 
-                      VoskBanner(voskStatus, voskError)
+                      VoskBanner(voskStatus, voskError, voskProgress)
                       Spacer(Modifier.height(4.dp))
 
                       if (micListening) {
@@ -1762,12 +1796,12 @@ jobs:
           }
 
           @Composable
-          private fun VoskBanner(status: Int, error: String) {
+          private fun VoskBanner(status: Int, error: String, progress: Int) {
               val ctx = LocalContext.current
               when (status) {
                   2 -> Text("CEREBRO DE VOZ OFFLINE: ONLINE", color = GREEN, fontSize = 9.sp, letterSpacing = 2.sp)
                   1 -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                      Text("PREPARANDO CEREBRO DE VOZ...", color = AMBER, fontSize = 10.sp)
+                      Text("PREPARANDO CEREBRO DE VOZ... $progress%", color = AMBER, fontSize = 10.sp)
                       Text("Extraindo arquivos internos. Aguarde ate 1 minuto.", color = NEON.copy(alpha = 0.6f), fontSize = 9.sp)
                   }
                   else -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -2400,7 +2434,7 @@ jobs:
           }
           FIM_BOOT
 
-          echo "Projeto 4.5 gerado com sucesso."
+          echo "Projeto 4.6 gerado com sucesso."
 
       - name: Embutir cerebro de voz (ZIP oficial, arquivo unico)
         run: |
@@ -2409,7 +2443,7 @@ jobs:
           TAMANHO=$(stat -c%s app/src/main/assets/model-pt.zip)
           echo "Modelo ZIP embutido: $TAMANHO bytes"
           if [ "$TAMANHO" -lt 30000000 ]; then echo "ERRO: modelo incompleto"; exit 1; fi
-          echo "Cerebro de voz embutido no APK (metodo oficial, arquivo unico)."
+          echo "Cerebro de voz embutido no APK (arquivo unico)."
 
       - name: Compilar APK
         run: |
@@ -2435,5 +2469,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ github.run_number }}
-          name: ATLAS 4.5 Oficial Zip - v${{ github.run_number }}
+          name: ATLAS 4.6 Extracao Inteligente - v${{ github.run_number }}
           files: app/build/outputs/apk/debug/app-debug.apk
