@@ -72,8 +72,8 @@ jobs:
                   applicationId = "com.atlas.assistant"
                   minSdk = 26
                   targetSdk = 34
-                  versionCode = 19
-                  versionName = "4.7"
+                  versionCode = 20
+                  versionName = "4.8"
               }
               buildFeatures { compose = true }
               composeOptions { kotlinCompilerExtensionVersion = "1.5.8" }
@@ -82,6 +82,9 @@ jobs:
                   targetCompatibility = JavaVersion.VERSION_17
               }
               kotlinOptions { jvmTarget = "17" }
+              androidResources {
+                  noCompress += "zip"
+              }
           }
           dependencies {
               implementation(platform("androidx.compose:compose-bom:2024.02.01"))
@@ -183,11 +186,12 @@ jobs:
           import java.io.BufferedInputStream
           import java.io.File
           import java.io.FileOutputStream
-          import java.util.zip.ZipInputStream
+          import java.util.zip.ZipFile
 
           /**
-           * O proprio motor VOSK valida a pasta: extrai o ZIP, testa cada
-           * candidato com Model() real e memoriza o vencedor. A prova de estrutura.
+           * Cadeia blindada: asset cru (noCompress) -> copia para arquivo
+           * real -> validacao pelo diretorio central do ZIP -> extracao ->
+           * o motor VOSK valida os candidatos -> local definitivo memorizado.
            */
           object VoskSpeech {
 
@@ -250,26 +254,44 @@ jobs:
                   errorMsg.value = ""
                   Thread {
                       try {
+                          // PASSO 1: copia o asset cru para um arquivo real
+                          progress.value = 10
+                          val zipFile = File(ctx.filesDir, "model-pt.zip")
+                          ctx.assets.open("model-pt.zip").use { input ->
+                              BufferedInputStream(input, 262144).use { bis ->
+                                  FileOutputStream(zipFile).use { out ->
+                                      bis.copyTo(out, 262144)
+                                  }
+                              }
+                          }
+                          val len = zipFile.length()
+                          if (len < 30L * 1024L * 1024L) {
+                              zipFile.delete()
+                              throw RuntimeException("zip interno incompleto ($len bytes)")
+                          }
+                          progress.value = 40
+
+                          // PASSO 2: valida o ZIP pelo diretorio central e extrai
                           val tmp = File(ctx.filesDir, "vosk-extract-tmp")
                           tmp.deleteRecursively()
                           tmp.mkdirs()
                           var count = 0
-                          ZipInputStream(
-                              BufferedInputStream(ctx.assets.open("model-pt.zip"), 262144)
-                          ).use { zis ->
-                              var entry = zis.nextEntry
-                              while (entry != null) {
-                                  if (!entry.isDirectory) {
-                                      val out = File(tmp, entry.name)
-                                      out.parentFile?.mkdirs()
-                                      FileOutputStream(out).use { zis.copyTo(it, 262144) }
-                                      count++
+                          ZipFile(zipFile).use { zf ->
+                              val entries = zf.entries()
+                              while (entries.hasMoreElements()) {
+                                  val entry = entries.nextElement()
+                                  if (entry.isDirectory) continue
+                                  val out = File(tmp, entry.name)
+                                  out.parentFile?.mkdirs()
+                                  zf.getInputStream(entry).use { input ->
+                                      FileOutputStream(out).use { input.copyTo(it, 262144) }
                                   }
-                                  entry = zis.nextEntry
+                                  count++
                               }
                           }
-                          progress.value = 70
+                          progress.value = 75
 
+                          // PASSO 3: o motor VOSK valida os candidatos
                           val candidates = ArrayList<File>()
                           if (File(tmp, "am").isDirectory) candidates.add(tmp)
                           val queue = ArrayDeque<File>()
@@ -308,7 +330,16 @@ jobs:
                           }
 
                           if (winner != null) {
-                              prefs(ctx).edit().putString("model_root", winner.absolutePath).apply()
+                              val finalDir = File(ctx.filesDir, "model-pt-final")
+                              finalDir.deleteRecursively()
+                              if (!winner.renameTo(finalDir)) {
+                                  winner.copyRecursively(finalDir, overwrite = true)
+                                  winner.deleteRecursively()
+                              }
+                              prefs(ctx).edit().putString("model_root", finalDir.absolutePath).apply()
+                              model = null
+                              tmp.deleteRecursively()
+                              zipFile.delete()
                               progress.value = 100
                               status.value = 2
                           } else {
@@ -1852,7 +1883,7 @@ jobs:
                   2 -> Text("CEREBRO DE VOZ OFFLINE: ONLINE", color = GREEN, fontSize = 9.sp, letterSpacing = 2.sp)
                   1 -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
                       Text("PREPARANDO CEREBRO DE VOZ... $progress%", color = AMBER, fontSize = 10.sp)
-                      Text("Extraindo e validando com o motor. Aguarde ate 1 minuto.", color = NEON.copy(alpha = 0.6f), fontSize = 9.sp)
+                      Text("Copiando, validando e extraindo. Aguarde ate 1 minuto.", color = NEON.copy(alpha = 0.6f), fontSize = 9.sp)
                   }
                   else -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
                       Button(
@@ -2484,16 +2515,16 @@ jobs:
           }
           FIM_BOOT
 
-          echo "Projeto 4.7 gerado com sucesso."
+          echo "Projeto 4.8 gerado com sucesso."
 
-      - name: Embutir cerebro de voz (ZIP oficial, arquivo unico)
+      - name: Embutir cerebro de voz (ZIP oficial, armazenado sem compressao)
         run: |
           mkdir -p app/src/main/assets
           curl -sL --retry 5 --retry-delay 3 -o app/src/main/assets/model-pt.zip "https://alphacephei.com/vosk/models/vosk-model-small-pt-0.3.zip"
           TAMANHO=$(stat -c%s app/src/main/assets/model-pt.zip)
           echo "Modelo ZIP embutido: $TAMANHO bytes"
           if [ "$TAMANHO" -lt 30000000 ]; then echo "ERRO: modelo incompleto"; exit 1; fi
-          echo "Cerebro de voz embutido no APK (arquivo unico)."
+          echo "Cerebro embutido. A diretiva noCompress do Gradle mantem o ZIP cru no APK."
 
       - name: Compilar APK
         run: |
@@ -2519,5 +2550,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ github.run_number }}
-          name: ATLAS 4.7 Validacao pelo Motor - v${{ github.run_number }}
+          name: ATLAS 4.8 ZIP Cru - v${{ github.run_number }}
           files: app/build/outputs/apk/debug/app-debug.apk
