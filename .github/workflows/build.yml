@@ -72,8 +72,8 @@ jobs:
                   applicationId = "com.atlas.assistant"
                   minSdk = 26
                   targetSdk = 34
-                  versionCode = 25
-                  versionName = "7.0"
+                  versionCode = 26
+                  versionName = "7.1"
               }
               buildFeatures { compose = true }
               composeOptions { kotlinCompilerExtensionVersion = "1.5.8" }
@@ -187,10 +187,6 @@ jobs:
           import java.net.HttpURLConnection
           import java.net.URL
 
-          /**
-           * Transcricao com Whisper large-v3-turbo na Groq — estado da arte mundial.
-           * Multipart em memoria; retorna o texto completo ou null.
-           */
           object WhisperTool {
 
               fun transcribe(ctx: Context, wav: File): String? {
@@ -1316,7 +1312,6 @@ jobs:
               }
           }
 
-          /** Gravador WAV minimalista (16kHz mono PCM16). */
           class WavWriter(private val file: File, private val sampleRate: Int = 16000) {
               private val out = FileOutputStream(file)
               private var dataSize = 0
@@ -1328,6 +1323,12 @@ jobs:
               fun write(pcm: ByteArray, n: Int) {
                   if (n <= 0) return
                   out.write(pcm, 0, n)
+                  dataSize += n
+              }
+
+              fun write(pcm: ByteArray, off: Int, n: Int) {
+                  if (n <= 0) return
+                  out.write(pcm, off, n)
                   dataSize += n
               }
 
@@ -1349,16 +1350,12 @@ jobs:
                       wi(sampleRate); wi(sampleRate * 2); ws(2); ws(16)
                       raf.writeBytes("data"); wi(dataSize)
                       raf.close()
-                  } catch (_: Exception) {}
+                  } catch (_: Exception) {
+                  }
                   return file
               }
           }
 
-          /**
-           * 7.0: Ring buffer de 10s + wake word Vosk + VAD + transcricao
-           * Whisper large-v3-turbo (Groq). Fallback offline Vosk quando
-           * sem chave. Pipeline unico de microfone.
-           */
           class AtlasService : Service() {
 
               private var tone: ToneGenerator? = null
@@ -1371,7 +1368,6 @@ jobs:
                   "davis", "atlas", "hey atlas", "ok atlas", "o atlas"
               )
 
-              // Ring buffer de audio (10s @16kHz mono 16bit = 320000 bytes)
               private val ringSize = 16000 * 2 * 10
               private val ring = ByteArray(ringSize)
               private var ringTotal = 0L
@@ -1388,7 +1384,7 @@ jobs:
               }
 
               private fun ringExtractLastSeconds(seconds: Int): ByteArray {
-                  val bytesWanted = maxOf(0L, minOf(ringTotal, (seconds * 32000L))).toInt()
+                  val bytesWanted = maxOf(0L, minOf(ringTotal, seconds * 32000L)).toInt()
                   if (bytesWanted == 0) return ByteArray(0)
                   val start = ringTotal - bytesWanted
                   val out = ByteArray(bytesWanted)
@@ -1431,7 +1427,7 @@ jobs:
                               Bus.state.value = Bus.State.LISTENING
                               Bus.heard.value = ""
                               Bus.liveText.value = ""
-                              startCapture(0)
+                              startCapture(3)
                           }
                       }
                   }
@@ -1494,12 +1490,11 @@ jobs:
                   return (rms / 3000.0).toFloat().coerceIn(0f, 1f)
               }
 
-              // Captura WAV corrente (modo LISTENING)
               private var writer: WavWriter? = null
               private var captureStart = 0L
               private var captureHasVoice = false
               private var captureSilenceStart = 0L
-              private var captureLastVoice = 0L
+              private var skipBytes = 0
 
               private fun startCapture(prerollSeconds: Int) {
                   stopCapture()
@@ -1513,7 +1508,7 @@ jobs:
                   captureStart = System.currentTimeMillis()
                   captureHasVoice = false
                   captureSilenceStart = 0
-                  captureLastVoice = 0
+                  skipBytes = 8000
               }
 
               private fun stopCapture(): File? {
@@ -1521,7 +1516,9 @@ jobs:
                   writer = null
                   captureHasVoice = false
                   captureSilenceStart = 0
-                  return w?.finish()
+                  skipBytes = 0
+                  if (w == null) return null
+                  return w.finish()
               }
 
               private fun startLoop() {
@@ -1545,7 +1542,6 @@ jobs:
                           val buf = ByteArray(8192)
                           var lastPartial = ""
                           var forceSeq = 0
-
                           var noiseFloor = 300.0
 
                           while (running) {
@@ -1568,16 +1564,15 @@ jobs:
                                   noiseFloor = noiseFloor * 0.995 + level.toDouble() * 3000.0 * 0.005
                               }
 
-                              // alimenta o ring sempre (para pre-roll do wake word)
                               ringWrite(buf, n)
 
-                              // alimenta o Vosk (wake word + feedback visual)
-                              val recFed = rec.acceptWaveForm(buf, n)
-                              val voskFinal = if (recFed) JSONObject(rec.result).optString("text").trim() else ""
-                              val voskPartial = if (!recFed) JSONObject(rec.partialResult).optString("partial") else ""
+                              val fed = rec.acceptWaveForm(buf, n)
+                              val voskFinal = if (fed) JSONObject(rec.result).optString("text").trim() else ""
+                              val voskPartial = if (!fed) JSONObject(rec.partialResult).optString("partial") else ""
 
                               if (st == Bus.State.IDLE) {
-                                  val low = (if (voskFinal.isNotBlank()) voskFinal else voskPartial).lowercase()
+                                  val probe = if (voskFinal.isNotBlank()) voskFinal else voskPartial
+                                  val low = probe.lowercase()
                                   val w = wakeWords.firstOrNull { low.contains(it) }
                                   if (w != null) {
                                       tone?.startTone(ToneGenerator.TONE_PROP_BEEP, 120)
@@ -1585,41 +1580,42 @@ jobs:
                                       Bus.heard.value = ""
                                       Bus.liveText.value = ""
                                       lastPartial = ""
-                                      // pre-roll de 3s: pega o "Jarvis, ..." inteiro
                                       startCapture(3)
                                   }
                               } else {
-                                  // LISTENING
                                   if (Bus.forceFinalize.value != forceSeq) {
                                       forceSeq = Bus.forceFinalize.value
                                       finishCapture(rec, voskPartial)
                                       continue
                                   }
 
-                                  // feedback visual (Vosk partial)
                                   if (voskPartial.isNotBlank() && voskPartial != lastPartial) {
                                       lastPartial = voskPartial
                                       Bus.liveText.value = voskPartial
                                   }
 
-                                  // grava no WAV
-                                  writer?.write(buf, n)
+                                  val w = writer
+                                  if (w != null) {
+                                      if (skipBytes > 0) {
+                                          val take = minOf(skipBytes, n)
+                                          skipBytes -= take
+                                          if (n > take) w.write(buf, take, n - take)
+                                      } else {
+                                          w.write(buf, n)
+                                      }
+                                  }
 
                                   if (isVoice) {
                                       captureHasVoice = true
-                                      captureLastVoice = now
                                       captureSilenceStart = 0
                                   } else if (captureHasVoice && captureSilenceStart == 0L) {
                                       captureSilenceStart = now
                                   }
 
                                   val elapsed = now - captureStart
-                                  val hadText = Bus.liveText.value.isNotBlank() || voskFinal.isNotBlank()
-
                                   val finalizeNow =
                                       (captureHasVoice && captureSilenceStart > 0 && now - captureSilenceStart > 700) ||
-                                      elapsed > 15000 ||
-                                      (captureHasVoice && !hadText && now - captureStart > 2500 && captureSilenceStart > 0)
+                                      elapsed > 15000
 
                                   if (finalizeNow) {
                                       finishCapture(rec, voskPartial)
@@ -1634,27 +1630,31 @@ jobs:
                   }.start()
               }
 
-              /** Finaliza a captura: Whisper primeiro (se Groq ok), Vosk como fallback. */
               private fun finishCapture(rec: Recognizer?, voskPartial: String) {
                   Bus.audioLevel.value = 0f
-                  val wav = stopCapture()
-                  val voskText = (
-                      if (voskPartial.isNotBlank()) voskPartial
-                      else try {
-                          JSONObject(rec?.finalResult ?: "{}").optString("text").trim()
-                      } catch (_: Exception) ""
-                  ).trim()
+                  val wav: File? = stopCapture()
 
-                  val useWhisper = AiTool.isConfigured(applicationContext) &&
-                      wav != null && wav.length() > 4000
+                  var voskText = voskPartial.trim()
+                  if (voskText.isBlank() && rec != null) {
+                      try {
+                          val fr = rec.finalResult
+                          voskText = JSONObject(fr).optString("text").trim()
+                      } catch (_: Exception) {
+                          voskText = ""
+                      }
+                  }
 
-                  if (useWhisper) {
+                  val wavReady = wav != null && wav.length() > 4000L
+                  val useWhisper = AiTool.isConfigured(applicationContext) && wavReady
+
+                  if (useWhisper && wav != null) {
+                      val f: File = wav
                       Bus.state.value = Bus.State.PROCESSING
                       Bus.liveText.value = "Transcrevendo..."
                       Thread {
-                          val t = WhisperTool.transcribe(applicationContext, wav)
-                          wav.delete()
-                          val cmd = t ?: voskText
+                          val t = WhisperTool.transcribe(applicationContext, f)
+                          f.delete()
+                          val cmd = (t ?: voskText).trim()
                           if (cmd.isNotBlank()) {
                               handler.post { doHandle(cmd) }
                           } else {
@@ -2727,7 +2727,7 @@ jobs:
           }
           FIM_BOOT
 
-          echo "Projeto 7.0 gerado com sucesso."
+          echo "Projeto 7.1 gerado com sucesso."
 
       - name: Embutir cerebro de voz offline (fallback)
         run: |
@@ -2762,5 +2762,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ github.run_number }}
-          name: ATLAS 7.0 Whisper Elite - v${{ github.run_number }}
+          name: ATLAS 7.1 Whisper Elite - v${{ github.run_number }}
           files: app/build/outputs/apk/debug/app-debug.apk
