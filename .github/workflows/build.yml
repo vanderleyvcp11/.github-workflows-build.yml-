@@ -72,8 +72,8 @@ jobs:
                   applicationId = "com.atlas.assistant"
                   minSdk = 26
                   targetSdk = 34
-                  versionCode = 20
-                  versionName = "4.8"
+                  versionCode = 21
+                  versionName = "4.9"
               }
               buildFeatures { compose = true }
               composeOptions { kotlinCompilerExtensionVersion = "1.5.8" }
@@ -189,9 +189,8 @@ jobs:
           import java.util.zip.ZipFile
 
           /**
-           * Cadeia blindada: asset cru (noCompress) -> copia para arquivo
-           * real -> validacao pelo diretorio central do ZIP -> extracao ->
-           * o motor VOSK valida os candidatos -> local definitivo memorizado.
+           * 4.9: varre TODOS os final.mdl extraidos (qualquer estrutura: flat
+           * ou am/) e deixa o proprio motor VOSK validar cada candidato.
            */
           object VoskSpeech {
 
@@ -205,31 +204,13 @@ jobs:
               private fun prefs(ctx: Context) =
                   ctx.getSharedPreferences("atlas", Context.MODE_PRIVATE)
 
-              fun savedRoot(ctx: Context): File? {
-                  val p = prefs(ctx).getString("model_root", null) ?: return null
-                  val f = File(p)
-                  return if (f.isDirectory) f else null
-              }
-
-              fun scanRoot(ctx: Context): File? {
-                  val base = ctx.filesDir
-                  if (File(base, "am").isDirectory) return base
-                  val queue = ArrayDeque<File>()
-                  queue.add(base)
-                  while (queue.isNotEmpty()) {
-                      val d = queue.removeFirst()
-                      val subs = d.listFiles() ?: continue
-                      for (f in subs) {
-                          if (f.isDirectory) {
-                              if (File(f, "am").isDirectory) return f
-                              queue.add(f)
-                          }
-                      }
-                  }
+              fun modelRoot(ctx: Context): File? {
+                  val saved = prefs(ctx).getString("model_root", null)
+                  if (saved != null && File(saved).isDirectory) return File(saved)
+                  val pref = File(ctx.filesDir, "model-pt-final")
+                  if (findAnyFinal(pref) != null) return pref
                   return null
               }
-
-              fun modelRoot(ctx: Context): File? = savedRoot(ctx) ?: scanRoot(ctx)
 
               fun isReady(ctx: Context): Boolean = modelRoot(ctx) != null
 
@@ -247,6 +228,21 @@ jobs:
                   status.value = if (isReady(ctx)) 2 else 0
               }
 
+              private fun findAnyFinal(base: File): File? {
+                  if (!base.isDirectory) return null
+                  val queue = ArrayDeque<File>()
+                  queue.add(base)
+                  while (queue.isNotEmpty()) {
+                      val d = queue.removeFirst()
+                      val subs = d.listFiles() ?: continue
+                      for (f in subs) {
+                          if (f.isDirectory) queue.add(f)
+                          else if (f.name == "final.mdl") return f
+                      }
+                  }
+                  return null
+              }
+
               fun unpack(ctx: Context) {
                   val st = status.value
                   if (st == 1 || st == 2) return
@@ -254,7 +250,7 @@ jobs:
                   errorMsg.value = ""
                   Thread {
                       try {
-                          // PASSO 1: copia o asset cru para um arquivo real
+                          // PASSO 1: copia o asset cru para arquivo real
                           progress.value = 10
                           val zipFile = File(ctx.filesDir, "model-pt.zip")
                           ctx.assets.open("model-pt.zip").use { input ->
@@ -271,7 +267,7 @@ jobs:
                           }
                           progress.value = 40
 
-                          // PASSO 2: valida o ZIP pelo diretorio central e extrai
+                          // PASSO 2: valida pelo diretorio central e extrai
                           val tmp = File(ctx.filesDir, "vosk-extract-tmp")
                           tmp.deleteRecursively()
                           tmp.mkdirs()
@@ -289,24 +285,30 @@ jobs:
                                   count++
                               }
                           }
-                          progress.value = 75
+                          progress.value = 70
 
-                          // PASSO 3: o motor VOSK valida os candidatos
-                          val candidates = ArrayList<File>()
-                          if (File(tmp, "am").isDirectory) candidates.add(tmp)
+                          // PASSO 3: coleta TODOS os final.mdl e monta candidatos
+                          val finals = ArrayList<File>()
                           val queue = ArrayDeque<File>()
                           queue.add(tmp)
                           while (queue.isNotEmpty()) {
                               val d = queue.removeFirst()
                               val subs = d.listFiles() ?: continue
                               for (f in subs) {
-                                  if (f.isDirectory) {
-                                      if (f != tmp && File(f, "am").isDirectory) candidates.add(f)
-                                      queue.add(f)
-                                  }
+                                  if (f.isDirectory) queue.add(f)
+                                  else if (f.name == "final.mdl") finals.add(f)
                               }
                           }
+                          val candidates = LinkedHashSet<File>()
+                          for (fm in finals) {
+                              fm.parentFile?.let { candidates.add(it) }
+                              fm.parentFile?.parentFile?.let { p ->
+                                  if (p != tmp) candidates.add(p)
+                              }
+                          }
+                          candidates.add(tmp)
 
+                          // PASSO 4: o motor VOSK decide o vencedor
                           var winner: File? = null
                           var lastErr: Throwable? = null
                           for (c in candidates) {
@@ -315,15 +317,6 @@ jobs:
                                   winner = c
                                   model = probe
                                   break
-                              } catch (t: Throwable) {
-                                  lastErr = t
-                              }
-                          }
-                          if (winner == null) {
-                              try {
-                                  val probe = Model(tmp.absolutePath)
-                                  winner = tmp
-                                  model = probe
                               } catch (t: Throwable) {
                                   lastErr = t
                               }
@@ -346,7 +339,7 @@ jobs:
                               val tree = describeTree(tmp)
                               tmp.deleteRecursively()
                               status.value = 3
-                              errorMsg.value = "nenhum modelo valido ($count arquivos). $tree | ultimo erro: ${lastErr?.message ?: "nenhum"}"
+                              errorMsg.value = "nenhum modelo valido ($count arquivos, ${candidates.size} candidatos). $tree | ultimo erro: ${lastErr?.message ?: "nenhum"}"
                           }
                       } catch (e: Throwable) {
                           status.value = 3
@@ -651,7 +644,7 @@ jobs:
 
               suspend fun ask(ctx: Context, prompt: String): AiAnswer = withContext(Dispatchers.IO) {
                   val id = activeId(ctx)
-                      ?: return@withContext AiAnswer(false, "Nenhuma IA selecionada.")
+                      ?: return@withContext AiAnswer(false, "Nenhuma IA selecionada. Toque no botao IA e cole a chave gsk_...")
                   val p = providers.firstOrNull { it.id == id }
                       ?: return@withContext AiAnswer(false, "IA desconhecida.")
                   val key = getKey(ctx, id)
@@ -1237,8 +1230,29 @@ jobs:
           object Atlas {
               lateinit var appCtx: Context
               private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+
               fun ask(text: String) {
                   if (!::appCtx.isInitialized) return
+                  val t = text.trim()
+
+                  // CHAVE GROQ colada no campo de comando -> ativa automaticamente
+                  if (t.startsWith("gsk_") && t.length > 25) {
+                      Bus.heard.value = "(chave Groq detectada)"
+                      Bus.state.value = Bus.State.PROCESSING
+                      AiTool.save(appCtx, "groq", t, AiTool.getModel(appCtx, "groq"))
+                      scope.launch {
+                          val r = AiTool.ask(appCtx, "Diga: inteligencia ativada.")
+                          val msg = if (r.ok)
+                              "Inteligência Groq ativada e testada com sucesso, senhor. Pode perguntar à vontade."
+                          else
+                              "Chave Groq salva, mas o teste falhou, senhor. Motivo: ${r.text}"
+                          Bus.reply.value = msg
+                          Bus.add("(chave Groq)", msg)
+                          VoiceOutput.speak(msg) { Bus.state.value = Bus.State.IDLE }
+                      }
+                      return
+                  }
+
                   Bus.heard.value = text
                   Bus.state.value = Bus.State.PROCESSING
                   scope.launch {
@@ -1790,7 +1804,7 @@ jobs:
                           OutlinedTextField(
                               value = input, onValueChange = { input = it },
                               modifier = Modifier.weight(1f),
-                              placeholder = { Text("Digite um comando...", color = Color(0xFF3B4C5C), fontSize = 13.sp) }
+                              placeholder = { Text("Digite um comando... (cole a chave gsk_ aqui para ativar a IA)", color = Color(0xFF3B4C5C), fontSize = 11.sp) }
                           )
                           Spacer(Modifier.width(8.dp))
                           RoundButton("ENVIAR") {
@@ -2515,7 +2529,7 @@ jobs:
           }
           FIM_BOOT
 
-          echo "Projeto 4.8 gerado com sucesso."
+          echo "Projeto 4.9 gerado com sucesso."
 
       - name: Embutir cerebro de voz (ZIP oficial, armazenado sem compressao)
         run: |
@@ -2524,7 +2538,7 @@ jobs:
           TAMANHO=$(stat -c%s app/src/main/assets/model-pt.zip)
           echo "Modelo ZIP embutido: $TAMANHO bytes"
           if [ "$TAMANHO" -lt 30000000 ]; then echo "ERRO: modelo incompleto"; exit 1; fi
-          echo "Cerebro embutido. A diretiva noCompress do Gradle mantem o ZIP cru no APK."
+          echo "Cerebro embutido."
 
       - name: Compilar APK
         run: |
@@ -2550,5 +2564,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ github.run_number }}
-          name: ATLAS 4.8 ZIP Cru - v${{ github.run_number }}
+          name: ATLAS 4.9 Modelo Flat - v${{ github.run_number }}
           files: app/build/outputs/apk/debug/app-debug.apk
