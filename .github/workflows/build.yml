@@ -72,8 +72,8 @@ jobs:
                   applicationId = "com.atlas.assistant"
                   minSdk = 26
                   targetSdk = 34
-                  versionCode = 26
-                  versionName = "7.1"
+                  versionCode = 27
+                  versionName = "7.2"
               }
               buildFeatures { compose = true }
               composeOptions { kotlinCompilerExtensionVersion = "1.5.8" }
@@ -647,7 +647,7 @@ jobs:
                   P("gemini", "GEMINI", "https://generativelanguage.googleapis.com/v1beta/models/", "gemini-1.5-flash", true)
               )
 
-              private const val SYS = "Voce e o ATLAS, assistente de voz estilo Jarvis. Responda em portugues do Brasil com no maximo 2 frases CURTAS e diretas. Elegante, trate o usuario como senhor. Vá direto ao ponto."
+              private const val SYS = "Voce e o ATLAS, assistente de voz estilo Jarvis. Responda em portugues do Brasil com no maximo 2 frases CURTAS e diretas. Elegante, trate o usuario como senhor. Vá direto ao ponto. Se a mensagem nao fizer sentido, diga com elegancia que nao entendeu e peca para reformular."
 
               private fun prefs(ctx: Context) =
                   ctx.getSharedPreferences("atlas", Context.MODE_PRIVATE)
@@ -694,7 +694,13 @@ jobs:
                   val model = getModel(ctx, id)
                   try {
                       val resp = if (p.isGemini) askGemini(p, key, model, prompt) else askOpenAi(p, key, model, prompt)
-                      if (resp.isBlank()) AiAnswer(false, "A IA respondeu vazio.")
+                      if (resp.isBlank()) {
+                          // 1 retry com prompt simplificado
+                          val retry = if (p.isGemini) askGemini(p, key, model, "Responda em uma frase curta: $prompt")
+                          else askOpenAi(p, key, model, "Responda em uma frase curta: $prompt")
+                          if (retry.isBlank()) AiAnswer(false, "Sem resposta util para essa frase.")
+                          else AiAnswer(true, retry)
+                      }
                       else AiAnswer(true, resp)
                   } catch (e: UnknownHostException) {
                       AiAnswer(false, "Sem internet ou servidor inacessivel.")
@@ -889,8 +895,28 @@ jobs:
               private var torchOn = false
 
               suspend fun handle(ctx: Context, raw: String): String =
-                  try { route(ctx, raw, normalize(raw)) }
+                  try { route(ctx, raw, cleanFillers(raw)) }
                   catch (e: Exception) { "Encontrei uma falha ao executar: ${e.message}, senhor." }
+
+              /** Remove palavras soltas do inicio da transcricao ("e", "ah", "entao"...). */
+              private fun cleanFillers(s: String): String {
+                  var t = s.trim()
+                  val fillers = listOf("e ", "é ", "ah ", "então ", "entao ", "tipo ", "olha ", "bem ", "ok ")
+                  var changed = true
+                  var guard = 0
+                  while (changed && guard < 5) {
+                      changed = false
+                      guard++
+                      val low = t.lowercase()
+                      for (f in fillers) {
+                          if (low.startsWith(f) && t.length > f.length + 3) {
+                              t = t.substring(f.length).trim()
+                              changed = true
+                          }
+                      }
+                  }
+                  return t
+              }
 
               private fun normalize(s: String) =
                   Normalizer.normalize(s.lowercase(Locale.ROOT), Normalizer.Form.NFD)
@@ -931,7 +957,7 @@ jobs:
               private suspend fun smartFallback(ctx: Context, raw: String): String {
                   val ai = AiTool.ask(ctx, raw)
                   if (ai.ok) return ai.text
-                  return "A IA não respondeu, senhor. Motivo: ${ai.text}."
+                  return "Não entendi a frase, senhor. Tente: acender a lanterna, que horas são, ou pergunte qualquer coisa."
               }
 
               private fun flashlight(ctx: Context, q: String): String {
@@ -1269,7 +1295,6 @@ jobs:
               val heard = MutableStateFlow("")
               val reply = MutableStateFlow("")
               val log = MutableStateFlow<List<Pair<String, String>>>(emptyList())
-              val liveText = MutableStateFlow("")
               val audioLevel = MutableStateFlow(0f)
               val manualTrigger = MutableStateFlow(0)
               val forceFinalize = MutableStateFlow(0)
@@ -1323,12 +1348,6 @@ jobs:
               fun write(pcm: ByteArray, n: Int) {
                   if (n <= 0) return
                   out.write(pcm, 0, n)
-                  dataSize += n
-              }
-
-              fun write(pcm: ByteArray, off: Int, n: Int) {
-                  if (n <= 0) return
-                  out.write(pcm, off, n)
                   dataSize += n
               }
 
@@ -1426,8 +1445,7 @@ jobs:
                               tone?.startTone(ToneGenerator.TONE_PROP_BEEP, 120)
                               Bus.state.value = Bus.State.LISTENING
                               Bus.heard.value = ""
-                              Bus.liveText.value = ""
-                              startCapture(3)
+                              startCapture(2)
                           }
                       }
                   }
@@ -1435,7 +1453,6 @@ jobs:
                       Bus.paused.collect { p ->
                           if (p) {
                               Bus.state.value = Bus.State.IDLE
-                              Bus.liveText.value = ""
                               stopCapture()
                               updateNotification("Em modo descanso. Toque no app para acordar.")
                           } else {
@@ -1540,7 +1557,6 @@ jobs:
                           rec = Recognizer(VoskSpeech.model(this), sr.toFloat())
                           audio.startRecording()
                           val buf = ByteArray(8192)
-                          var lastPartial = ""
                           var forceSeq = 0
                           var noiseFloor = 300.0
 
@@ -1578,9 +1594,8 @@ jobs:
                                       tone?.startTone(ToneGenerator.TONE_PROP_BEEP, 120)
                                       Bus.state.value = Bus.State.LISTENING
                                       Bus.heard.value = ""
-                                      Bus.liveText.value = ""
-                                      lastPartial = ""
-                                      startCapture(3)
+                                      lastPartialForVosk = ""
+                                      startCapture(2)
                                   }
                               } else {
                                   if (Bus.forceFinalize.value != forceSeq) {
@@ -1589,10 +1604,8 @@ jobs:
                                       continue
                                   }
 
-                                  if (voskPartial.isNotBlank() && voskPartial != lastPartial) {
-                                      lastPartial = voskPartial
-                                      Bus.liveText.value = voskPartial
-                                  }
+                                  // NOTA: nao mostramos mais o rascunho do Vosk na tela
+                                  // (era confuso). A transcricao final vem do Whisper.
 
                                   val w = writer
                                   if (w != null) {
@@ -1630,6 +1643,8 @@ jobs:
                   }.start()
               }
 
+              private var lastPartialForVosk = ""
+
               private fun finishCapture(rec: Recognizer?, voskPartial: String) {
                   Bus.audioLevel.value = 0f
                   val wav: File? = stopCapture()
@@ -1650,7 +1665,7 @@ jobs:
                   if (useWhisper && wav != null) {
                       val f: File = wav
                       Bus.state.value = Bus.State.PROCESSING
-                      Bus.liveText.value = "Transcrevendo..."
+                      Bus.heard.value = "(transcrevendo com IA...)"
                       Thread {
                           val t = WhisperTool.transcribe(applicationContext, f)
                           f.delete()
@@ -1660,8 +1675,8 @@ jobs:
                           } else {
                               handler.post {
                                   Bus.state.value = Bus.State.IDLE
-                                  Bus.liveText.value = ""
-                                  Bus.reply.value = "Não captei a frase, senhor. Tente falar mais perto do microfone."
+                                  Bus.heard.value = ""
+                                  Bus.reply.value = "Não captei a frase, senhor. Fale mais perto e com calma."
                                   Bus.add("(voz)", Bus.reply.value)
                                   VoiceOutput.speak(Bus.reply.value) {}
                               }
@@ -1673,7 +1688,6 @@ jobs:
                           handler.post { doHandle(voskText) }
                       } else {
                           Bus.state.value = Bus.State.IDLE
-                          Bus.liveText.value = ""
                       }
                   }
               }
@@ -1835,7 +1849,6 @@ jobs:
               val heard by Bus.heard.collectAsState()
               val reply by Bus.reply.collectAsState()
               val log by Bus.log.collectAsState()
-              val live by Bus.liveText.collectAsState()
               val audioLevel by Bus.audioLevel.collectAsState()
               var input by remember { mutableStateOf("") }
               var showAi by remember { mutableStateOf(false) }
@@ -1934,10 +1947,8 @@ jobs:
 
                       if (state == Bus.State.LISTENING) {
                           Text(
-                              if (live.isBlank()) "OUVINDO... pare de falar e eu transcrevo com IA"
-                              else live,
-                              color = if (live.isBlank()) NEON.copy(alpha = 0.6f) else GOLD,
-                              fontSize = 13.sp, textAlign = TextAlign.Center
+                              "OUVINDO... fale e pare. A transcricao vem do Whisper.",
+                              color = NEON.copy(alpha = 0.8f), fontSize = 12.sp, textAlign = TextAlign.Center
                           )
                           Text(
                               "Toque no microfone de novo para enviar agora",
@@ -2727,7 +2738,7 @@ jobs:
           }
           FIM_BOOT
 
-          echo "Projeto 7.1 gerado com sucesso."
+          echo "Projeto 7.2 gerado com sucesso."
 
       - name: Embutir cerebro de voz offline (fallback)
         run: |
@@ -2762,5 +2773,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ github.run_number }}
-          name: ATLAS 7.1 Whisper Elite - v${{ github.run_number }}
+          name: ATLAS 7.2 Confianca Visual - v${{ github.run_number }}
           files: app/build/outputs/apk/debug/app-debug.apk
