@@ -72,8 +72,8 @@ jobs:
                   applicationId = "com.atlas.assistant"
                   minSdk = 26
                   targetSdk = 34
-                  versionCode = 16
-                  versionName = "4.4"
+                  versionCode = 17
+                  versionName = "4.5"
               }
               buildFeatures { compose = true }
               composeOptions { kotlinCompilerExtensionVersion = "1.5.8" }
@@ -180,17 +180,20 @@ jobs:
           import android.content.Context
           import kotlinx.coroutines.flow.MutableStateFlow
           import org.vosk.Model
+          import java.io.BufferedInputStream
           import java.io.File
           import java.io.FileOutputStream
+          import java.util.zip.ZipInputStream
 
           /**
-           * Cerebro de voz VOSK embutido no APK (assets/model-pt).
-           * Nao existe download em runtime: apenas copia local dos assets.
+           * Metodo OFICIAL do Vosk: um unico ZIP embutido no APK,
+           * extraido no primeiro uso. A prova de quirks de OEM.
            */
           object VoskSpeech {
 
               /** -1 desconhecido, 0 nao preparado, 1 preparando, 2 pronto, 3 erro */
               val status = MutableStateFlow(-1)
+              val errorMsg = MutableStateFlow("")
 
               @Volatile
               private var model: Model? = null
@@ -212,39 +215,47 @@ jobs:
                   return m
               }
 
-              /** Copia o modelo de dentro do APK para o armazenamento. Sem rede. */
               fun unpack(ctx: Context) {
                   val st = status.value
                   if (st == 1 || st == 2) return
                   status.value = 1
+                  errorMsg.value = ""
                   Thread {
                       try {
                           if (!isReady(ctx)) {
                               modelDir(ctx).deleteRecursively()
-                              copyAssets(ctx, "model-pt", ctx.filesDir)
+                              modelDir(ctx).mkdirs()
+                              val zis = ZipInputStream(
+                                  BufferedInputStream(ctx.assets.open("model-pt.zip"), 262144)
+                              )
+                              var entry = zis.nextEntry
+                              var count = 0
+                              while (entry != null) {
+                                  if (!entry.isDirectory) {
+                                      var name = entry.name
+                                      if (name.startsWith("vosk-model")) {
+                                          name = name.substringAfter('/')
+                                      }
+                                      if (name.isNotBlank() && !name.endsWith("/")) {
+                                          val out = File(modelDir(ctx), name)
+                                          out.parentFile?.mkdirs()
+                                          FileOutputStream(out).use { zis.copyTo(it, 262144) }
+                                          count++
+                                      }
+                                  }
+                                  entry = zis.nextEntry
+                              }
+                              zis.close()
                           }
                           status.value = if (isReady(ctx)) 2 else 3
-                      } catch (_: Exception) {
+                          if (status.value == 3) {
+                              errorMsg.value = "O pacote interno nao contem o arquivo esperado."
+                          }
+                      } catch (e: Throwable) {
                           status.value = 3
+                          errorMsg.value = e.message ?: e.javaClass.simpleName
                       }
                   }.start()
-              }
-
-              private fun copyAssets(ctx: Context, path: String, outRoot: File) {
-                  val assets = ctx.assets
-                  val children = assets.list(path) ?: return
-                  if (children.isEmpty()) {
-                      val dst = File(outRoot, path)
-                      dst.parentFile?.mkdirs()
-                      assets.open(path).use { input ->
-                          FileOutputStream(dst).use { input.copyTo(it) }
-                      }
-                  } else {
-                      File(outRoot, path).mkdirs()
-                      for (c in children) {
-                          copyAssets(ctx, "$path/$c", outRoot)
-                      }
-                  }
               }
           }
           FIM_VOSK
@@ -1452,6 +1463,7 @@ jobs:
               var micError by remember { mutableStateOf("") }
               var micJob by remember { mutableStateOf<Job?>(null) }
               val voskStatus by VoskSpeech.status.collectAsState()
+              val voskError by VoskSpeech.errorMsg.collectAsState()
               val listState = rememberLazyListState()
               val scope = rememberCoroutineScope()
 
@@ -1598,7 +1610,7 @@ jobs:
                       }
                       Spacer(Modifier.height(4.dp))
 
-                      VoskBanner(voskStatus)
+                      VoskBanner(voskStatus, voskError)
                       Spacer(Modifier.height(4.dp))
 
                       if (micListening) {
@@ -1750,23 +1762,28 @@ jobs:
           }
 
           @Composable
-          private fun VoskBanner(status: Int) {
+          private fun VoskBanner(status: Int, error: String) {
               val ctx = LocalContext.current
               when (status) {
                   2 -> Text("CEREBRO DE VOZ OFFLINE: ONLINE", color = GREEN, fontSize = 9.sp, letterSpacing = 2.sp)
                   1 -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
                       Text("PREPARANDO CEREBRO DE VOZ...", color = AMBER, fontSize = 10.sp)
-                      Text("Copiando arquivos internos. Aguarde ate 1 minuto.", color = NEON.copy(alpha = 0.6f), fontSize = 9.sp)
+                      Text("Extraindo arquivos internos. Aguarde ate 1 minuto.", color = NEON.copy(alpha = 0.6f), fontSize = 9.sp)
                   }
-                  else -> Button(
-                      onClick = { VoskSpeech.unpack(ctx) },
-                      colors = ButtonDefaults.buttonColors(containerColor = NEON_DEEP)
-                  ) {
-                      Text(
-                          if (status == 3) "ERRO — TOCAR PARA TENTAR DE NOVO"
-                          else "PREPARAR CEREBRO DE VOZ (1 toque, sem download)",
-                          fontSize = 11.sp
-                      )
+                  else -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                      Button(
+                          onClick = { VoskSpeech.unpack(ctx) },
+                          colors = ButtonDefaults.buttonColors(containerColor = NEON_DEEP)
+                      ) {
+                          Text(
+                              if (status == 3) "ERRO — TOCAR PARA TENTAR DE NOVO"
+                              else "PREPARAR CEREBRO DE VOZ (1 toque, sem download)",
+                              fontSize = 11.sp
+                          )
+                      }
+                      if (status == 3 && error.isNotBlank()) {
+                          Text("MOTIVO TECNICO: $error", color = RED, fontSize = 9.sp, textAlign = TextAlign.Center)
+                      }
                   }
               }
           }
@@ -2383,21 +2400,16 @@ jobs:
           }
           FIM_BOOT
 
-          echo "Projeto 4.4 gerado. Baixando modelo de voz (servidor do GitHub baixa em segundos)..."
+          echo "Projeto 4.5 gerado com sucesso."
 
-      - name: Embutir cerebro de voz no APK
+      - name: Embutir cerebro de voz (ZIP oficial, arquivo unico)
         run: |
           mkdir -p app/src/main/assets
-          curl -sL --retry 5 --retry-delay 3 -o /tmp/vosk-pt.zip "https://alphacephei.com/vosk/models/vosk-model-small-pt-0.3.zip"
-          TAMANHO=$(stat -c%s /tmp/vosk-pt.zip)
-          echo "Modelo baixado: $TAMANHO bytes"
+          curl -sL --retry 5 --retry-delay 3 -o app/src/main/assets/model-pt.zip "https://alphacephei.com/vosk/models/vosk-model-small-pt-0.3.zip"
+          TAMANHO=$(stat -c%s app/src/main/assets/model-pt.zip)
+          echo "Modelo ZIP embutido: $TAMANHO bytes"
           if [ "$TAMANHO" -lt 30000000 ]; then echo "ERRO: modelo incompleto"; exit 1; fi
-          cd app/src/main/assets
-          unzip -q /tmp/vosk-pt.zip
-          mv vosk-model-small-pt-0.3 model-pt
-          rm -f /tmp/vosk-pt.zip
-          ls model-pt
-          echo "Modelo embutido no APK com sucesso."
+          echo "Cerebro de voz embutido no APK (metodo oficial, arquivo unico)."
 
       - name: Compilar APK
         run: |
@@ -2423,5 +2435,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ github.run_number }}
-          name: ATLAS 4.4 Tudo-Incluso - v${{ github.run_number }}
+          name: ATLAS 4.5 Oficial Zip - v${{ github.run_number }}
           files: app/build/outputs/apk/debug/app-debug.apk
