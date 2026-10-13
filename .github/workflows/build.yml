@@ -72,8 +72,8 @@ jobs:
                   applicationId = "com.atlas.assistant"
                   minSdk = 26
                   targetSdk = 34
-                  versionCode = 18
-                  versionName = "4.6"
+                  versionCode = 19
+                  versionName = "4.7"
               }
               buildFeatures { compose = true }
               composeOptions { kotlinCompilerExtensionVersion = "1.5.8" }
@@ -186,8 +186,8 @@ jobs:
           import java.util.zip.ZipInputStream
 
           /**
-           * Extracao a prova de estrutura: descompacta o ZIP como vem,
-           * varre ate achar a pasta que contem am/final.mdl e a posiciona.
+           * O proprio motor VOSK valida a pasta: extrai o ZIP, testa cada
+           * candidato com Model() real e memoriza o vencedor. A prova de estrutura.
            */
           object VoskSpeech {
 
@@ -198,21 +198,49 @@ jobs:
               @Volatile
               private var model: Model? = null
 
-              fun modelDir(ctx: Context): File = File(ctx.filesDir, "model-pt")
+              private fun prefs(ctx: Context) =
+                  ctx.getSharedPreferences("atlas", Context.MODE_PRIVATE)
 
-              fun isReady(ctx: Context): Boolean =
-                  File(modelDir(ctx), "am/final.mdl").exists()
-
-              fun refresh(ctx: Context) {
-                  status.value = if (isReady(ctx)) 2 else 0
+              fun savedRoot(ctx: Context): File? {
+                  val p = prefs(ctx).getString("model_root", null) ?: return null
+                  val f = File(p)
+                  return if (f.isDirectory) f else null
               }
+
+              fun scanRoot(ctx: Context): File? {
+                  val base = ctx.filesDir
+                  if (File(base, "am").isDirectory) return base
+                  val queue = ArrayDeque<File>()
+                  queue.add(base)
+                  while (queue.isNotEmpty()) {
+                      val d = queue.removeFirst()
+                      val subs = d.listFiles() ?: continue
+                      for (f in subs) {
+                          if (f.isDirectory) {
+                              if (File(f, "am").isDirectory) return f
+                              queue.add(f)
+                          }
+                      }
+                  }
+                  return null
+              }
+
+              fun modelRoot(ctx: Context): File? = savedRoot(ctx) ?: scanRoot(ctx)
+
+              fun isReady(ctx: Context): Boolean = modelRoot(ctx) != null
 
               @Synchronized
               fun model(ctx: Context): Model {
                   model?.let { return it }
-                  val m = Model(modelDir(ctx).absolutePath)
+                  val root = modelRoot(ctx)
+                      ?: throw IllegalStateException("modelo nao preparado")
+                  val m = Model(root.absolutePath)
                   model = m
                   return m
+              }
+
+              fun refresh(ctx: Context) {
+                  status.value = if (isReady(ctx)) 2 else 0
               }
 
               fun unpack(ctx: Context) {
@@ -222,49 +250,72 @@ jobs:
                   errorMsg.value = ""
                   Thread {
                       try {
-                          if (!isReady(ctx)) {
-                              modelDir(ctx).deleteRecursively()
-                              val tmp = File(ctx.filesDir, "vosk-extract-tmp")
-                              tmp.deleteRecursively()
-                              tmp.mkdirs()
-                              var count = 0
-                              ZipInputStream(
-                                  BufferedInputStream(ctx.assets.open("model-pt.zip"), 262144)
-                              ).use { zis ->
-                                  var entry = zis.nextEntry
-                                  while (entry != null) {
-                                      if (!entry.isDirectory) {
-                                          val out = File(tmp, entry.name)
-                                          out.parentFile?.mkdirs()
-                                          FileOutputStream(out).use { zis.copyTo(it, 262144) }
-                                          count++
-                                      }
-                                      entry = zis.nextEntry
+                          val tmp = File(ctx.filesDir, "vosk-extract-tmp")
+                          tmp.deleteRecursively()
+                          tmp.mkdirs()
+                          var count = 0
+                          ZipInputStream(
+                              BufferedInputStream(ctx.assets.open("model-pt.zip"), 262144)
+                          ).use { zis ->
+                              var entry = zis.nextEntry
+                              while (entry != null) {
+                                  if (!entry.isDirectory) {
+                                      val out = File(tmp, entry.name)
+                                      out.parentFile?.mkdirs()
+                                      FileOutputStream(out).use { zis.copyTo(it, 262144) }
+                                      count++
+                                  }
+                                  entry = zis.nextEntry
+                              }
+                          }
+                          progress.value = 70
+
+                          val candidates = ArrayList<File>()
+                          if (File(tmp, "am").isDirectory) candidates.add(tmp)
+                          val queue = ArrayDeque<File>()
+                          queue.add(tmp)
+                          while (queue.isNotEmpty()) {
+                              val d = queue.removeFirst()
+                              val subs = d.listFiles() ?: continue
+                              for (f in subs) {
+                                  if (f.isDirectory) {
+                                      if (f != tmp && File(f, "am").isDirectory) candidates.add(f)
+                                      queue.add(f)
                                   }
                               }
-                              progress.value = 60
-                              val root = findModelRoot(tmp)
-                              if (root == null) {
-                                  val sample = tmp.listFiles()
-                                      ?.take(3)
-                                      ?.joinToString(", ") { it.name }
-                                      ?: "(vazio)"
-                                  tmp.deleteRecursively()
-                                  throw RuntimeException(
-                                      "estrutura inesperada ($count arquivos, raiz: $sample)"
-                                  )
-                              }
-                              progress.value = 90
-                              if (!root.renameTo(modelDir(ctx))) {
-                                  root.copyRecursively(modelDir(ctx), overwrite = true)
-                                  root.deleteRecursively()
-                              }
-                              tmp.deleteRecursively()
-                              progress.value = 100
                           }
-                          status.value = if (isReady(ctx)) 2 else 3
-                          if (status.value == 3) {
-                              errorMsg.value = "verificacao final falhou"
+
+                          var winner: File? = null
+                          var lastErr: Throwable? = null
+                          for (c in candidates) {
+                              try {
+                                  val probe = Model(c.absolutePath)
+                                  winner = c
+                                  model = probe
+                                  break
+                              } catch (t: Throwable) {
+                                  lastErr = t
+                              }
+                          }
+                          if (winner == null) {
+                              try {
+                                  val probe = Model(tmp.absolutePath)
+                                  winner = tmp
+                                  model = probe
+                              } catch (t: Throwable) {
+                                  lastErr = t
+                              }
+                          }
+
+                          if (winner != null) {
+                              prefs(ctx).edit().putString("model_root", winner.absolutePath).apply()
+                              progress.value = 100
+                              status.value = 2
+                          } else {
+                              val tree = describeTree(tmp)
+                              tmp.deleteRecursively()
+                              status.value = 3
+                              errorMsg.value = "nenhum modelo valido ($count arquivos). $tree | ultimo erro: ${lastErr?.message ?: "nenhum"}"
                           }
                       } catch (e: Throwable) {
                           status.value = 3
@@ -273,22 +324,21 @@ jobs:
                   }.start()
               }
 
-              /** Procura em largura a pasta que contem am/final.mdl. */
-              private fun findModelRoot(base: File): File? {
-                  if (File(base, "am/final.mdl").exists()) return base
+              private fun describeTree(base: File): String {
+                  val dirs = ArrayList<String>()
                   val queue = ArrayDeque<File>()
                   queue.add(base)
+                  var files = 0
                   while (queue.isNotEmpty()) {
                       val d = queue.removeFirst()
                       val subs = d.listFiles() ?: continue
+                      val names = subs.map { if (it.isDirectory) it.name + "/" else it.name }
+                      dirs.add("${d.name}:[${names.take(6).joinToString(", ")}]")
                       for (f in subs) {
-                          if (f.isDirectory) {
-                              if (File(f, "am/final.mdl").exists()) return f
-                              queue.add(f)
-                          }
+                          if (f.isDirectory) queue.add(f) else files++
                       }
                   }
-                  return null
+                  return "pastas: ${dirs.take(5).joinToString(" | ")} ($files arquivos)"
               }
           }
           FIM_VOSK
@@ -1802,7 +1852,7 @@ jobs:
                   2 -> Text("CEREBRO DE VOZ OFFLINE: ONLINE", color = GREEN, fontSize = 9.sp, letterSpacing = 2.sp)
                   1 -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
                       Text("PREPARANDO CEREBRO DE VOZ... $progress%", color = AMBER, fontSize = 10.sp)
-                      Text("Extraindo arquivos internos. Aguarde ate 1 minuto.", color = NEON.copy(alpha = 0.6f), fontSize = 9.sp)
+                      Text("Extraindo e validando com o motor. Aguarde ate 1 minuto.", color = NEON.copy(alpha = 0.6f), fontSize = 9.sp)
                   }
                   else -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
                       Button(
@@ -2434,7 +2484,7 @@ jobs:
           }
           FIM_BOOT
 
-          echo "Projeto 4.6 gerado com sucesso."
+          echo "Projeto 4.7 gerado com sucesso."
 
       - name: Embutir cerebro de voz (ZIP oficial, arquivo unico)
         run: |
@@ -2469,5 +2519,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ github.run_number }}
-          name: ATLAS 4.6 Extracao Inteligente - v${{ github.run_number }}
+          name: ATLAS 4.7 Validacao pelo Motor - v${{ github.run_number }}
           files: app/build/outputs/apk/debug/app-debug.apk
