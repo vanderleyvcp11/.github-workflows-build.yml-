@@ -72,8 +72,8 @@ jobs:
                   applicationId = "com.atlas.assistant"
                   minSdk = 26
                   targetSdk = 34
-                  versionCode = 13
-                  versionName = "4.1"
+                  versionCode = 14
+                  versionName = "4.2"
               }
               buildFeatures { compose = true }
               composeOptions { kotlinCompilerExtensionVersion = "1.5.8" }
@@ -1228,7 +1228,6 @@ jobs:
                       .build())
               }
 
-              /** Loop de escuta 100% offline com Vosk — sem servidores, sem reconexoes. */
               private fun startLoop() {
                   if (running) return
                   running = true
@@ -1755,7 +1754,7 @@ jobs:
                       val fy = ((i * 73 + 31).toFloat() % 100f) / 100f
                       val x = ((fx * size.width + drift * size.width * 0.02f * (i % 3 - 1)) + size.width) % size.width
                       val y = ((fy * size.height + drift * size.height * 0.01f * (i % 2)) + size.height) % size.height
-                      val a = 0.10f + 0.10f * (1 + sin(i * 2.1 + tw * 6.2831853f)) / 2f
+                      val a = 0.10f + 0.10f * (1f + sin(i * 2.1f + tw * 6.2831853f)) / 2f
                       drawCircle(NEON.copy(alpha = a), radius = 1.2f + (i % 3) * 0.5f, center = Offset(x, y))
                   }
               }
@@ -2048,7 +2047,7 @@ jobs:
                       val bw = (size.width - gap * (n - 1)) / n
                       for (i in 0 until n) {
                           val h = size.height * (0.15f + 0.8f * abs(
-                              sin(i * 0.9 + phase * 4.0).toFloat() * cos(i * 1.7 + phase * 2.3).toFloat()
+                              sin(i * 0.9f + phase * 4.0f).toFloat() * cos(i * 1.7f + phase * 2.3f).toFloat()
                           ))
                           drawRoundRect(
                               Brush.verticalGradient(
@@ -2068,8 +2067,8 @@ jobs:
                       }
                   }
                   Spacer(Modifier.height(6.dp))
-                  LoaderRow("NUCLEO", (abs(sin(phase * 2.0).toFloat()) * 0.7f + 0.3f))
-                  LoaderRow("REDE", (abs(cos(phase * 1.4).toFloat()) * 0.7f + 0.3f))
+                  LoaderRow("NUCLEO", (abs(sin(phase * 2.0f).toFloat()) * 0.7f + 0.3f))
+                  LoaderRow("REDE", (abs(cos(phase * 1.4f).toFloat()) * 0.7f + 0.3f))
               }
           }
 
@@ -2424,7 +2423,7 @@ jobs:
           }
           FIM_BOOT
 
-          echo "Projeto 4.1 gerado com sucesso."
+          echo "Projeto 4.2 gerado com sucesso."
 
       - name: Compilar APK
         run: |
@@ -2450,5 +2449,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ github.run_number }}
-          name: ATLAS 4.1 Cinema - v${{ github.run_number }}
+          name: ATLAS 4.2 Cinema - v${{ github.run_number }}
           files: app/build/outputs/apk/debug/app-debug.apk
